@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+.dt-app/
+dist/
+build/
+*.log
+captura 2.txt

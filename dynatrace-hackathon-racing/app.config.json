@@ -1,0 +1,15 @@
+{
+  "environmentUrl": "https://bwm98081.apps.dynatrace.com",
+  "app": {
+    "name": "...",
+    "version": "0.0.0",
+    "description": "...",
+    "id": "my.dynatrace.hackathon.racing",
+    "scopes": [
+      { "name": "storage:buckets:read", "comment": "default template" },
+      { "name": "storage:metrics:read", "comment": "default template" },
+      { "name": "storage:entities:read", "comment": "default template" },
+      { "name": "storage:bizevents:read", "comment": "ler os eventos racing.telemetry" }
+    ]
+  }
+}
