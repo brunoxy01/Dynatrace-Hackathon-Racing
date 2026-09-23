@@ -197,3 +197,9 @@ App: https://bwm98081.apps.dynatrace.com/ui/apps/my.dynatrace.hackathon.racing
 O seletor de período consulta eventos já ingeridos no Grail. A demonstração executada pelo servidor local não grava eventos na tenant; por isso ampliar o período não transforma essas simulações em histórico. O app publicado oferece também o replay da captura empacotada, sem depender do servidor Python. O modo Script é exclusivo do preview localhost.
 
 Para republicar alterações validadas: `npm run deploy -- --no-open` na pasta `dynatrace-hackathon-racing`. A conta Dynatrace precisa de permissão para instalar/atualizar apps.
+
+## Carro escolhido para o evento
+
+O carro do evento será o **Porsche 911**, ilustrado no canto inferior esquerdo do mapa. O campo **Carro na telemetria** conserva o nome recebido do simulador: capturas antigas não são renomeadas para Porsche. Novas sessões com o Porsche selecionado no AMS2 devem informar esse modelo via UDP. Eventos antigos que registraram Camaro continuam com esse valor no Grail; o decodificador atual já distingue pacotes de nomes de veículos dos nomes de classes.
+
+A imagem `ui/assets/porsche-911.png` foi derivada da imagem fornecida pelo organizador usando a ferramenta integrada imagegen. Prompt: remover todo o cenário, preservar o Porsche branco, perspectiva e pintura, com fundo transparente e enquadramento próximo ao carro.
