@@ -83,6 +83,9 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "lap_time_s": timings["lap_time_s"] if timings else None,
         "lap_race_position": timings["lap_race_position"] if timings else None,
         "best_lap_s": state.best_lap_s,
+        "last_lap_s": state.last_lap_s,
+        "lap_invalidated": timings["lap_invalidated"] if timings else None,
+        "track_name": state.track_location,
         "lap_number": timings["lap_number"] if timings else None,
     }
 

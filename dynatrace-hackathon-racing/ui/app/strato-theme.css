@@ -1,0 +1,68 @@
+/* Semantic tokens supplied by AppRoot; values adapt to the user's Strato theme.
+   The telemetry spectrum is a separate data encoding, not a UI theme color. */
+.racing-app {
+  --line: var(--dt-colors-border-neutral-subdued);
+  --soft: var(--dt-colors-background-container-neutral-subdued);
+  --racing-purple: var(--dt-colors-charts-sequential-purple-color-06-default);
+  font-family: var(--dt-typography-text-base-default-family);
+  padding: var(--dt-spacings-size-28) var(--dt-spacings-size-36) var(--dt-spacings-size-20);
+}
+.panel {
+  border-width: var(--dt-borders-width-default);
+  border-style: var(--dt-borders-style-default);
+  border-radius: var(--dt-borders-radius-surface-default);
+}
+.track-panel {
+  border-color: color-mix(in srgb,var(--racing-purple) 40%,transparent);
+  box-shadow: inset 0 0 var(--dt-spacings-size-24) color-mix(in srgb,var(--racing-purple) 3%,transparent);
+  padding: var(--dt-spacings-size-24) var(--dt-spacings-size-24) var(--dt-spacings-size-16);
+}
+.hero-grid,.kpis { gap:var(--dt-spacings-size-20); }
+.driver-column,.podium { gap:var(--dt-spacings-size-16); }
+.driver-card,.telemetry-panel { padding:var(--dt-spacings-size-20) var(--dt-spacings-size-24); }
+.leaderboard { padding:var(--dt-spacings-size-24); }
+.company { padding:var(--dt-spacings-size-16); }
+.identity h1 {font-family:var(--dt-typography-heading-level-1-family);font-size:var(--dt-typography-heading-level-1-size)!important;font-weight:var(--dt-typography-heading-level-1-weight)!important;line-height:var(--dt-typography-heading-level-1-line-height)!important;}
+.panel-heading h2,.driver-title h2 {font-size:var(--dt-typography-heading-level-4-size)!important;font-weight:var(--dt-typography-heading-level-4-weight)!important;}
+.panel-heading h3,.section-title h2 {font-size:var(--dt-typography-heading-level-5-size)!important;}
+.stat strong {font-size:var(--dt-typography-heading-level-3-size);font-weight:var(--dt-typography-heading-level-3-weight);}
+.muted,.coordinate-row>span,.stat>span {color:var(--dt-colors-text-neutral-subdued);opacity:1;}
+.status,.small-tag {border-color:var(--dt-colors-border-neutral-default);}
+.small-tag {border-radius:var(--dt-borders-radius-field-default);}
+.status-dot {background:var(--racing-purple);}
+.status-dot.active {background:var(--dt-colors-icon-success-default);box-shadow:none;}
+.legend-dot.speed_kmh {background:var(--dt-colors-charts-categorical-color-11-default);}
+.legend-dot.brake_pct {background:var(--racing-purple);}
+.legend-dot.acceleration_g {background:var(--dt-colors-charts-categorical-color-03-default);}
+.metric-legend {transition:opacity var(--dt-animations-fade-in-duration-fast) var(--dt-animations-fade-in-easing);}
+.metric-legend:focus-visible {outline-color:var(--dt-colors-border-primary-default);}
+.track-panel progress {accent-color:var(--racing-purple);}
+.notice {border-color:var(--dt-colors-border-primary-default);background:var(--dt-colors-background-container-primary-default);border-radius:var(--dt-borders-radius-container-default);}
+.notice.error {border-color:var(--dt-colors-border-critical-default);background:var(--dt-colors-background-container-critical-default);}
+.car-marker {transition:transform var(--dt-animations-slide-in-duration-fast) linear;}
+@media(max-width:1080px){.racing-app{padding:var(--dt-spacings-size-24)}.hero-grid{gap:var(--dt-spacings-size-16)}}
+@media(max-width:780px){.racing-app,.leaderboard{padding:var(--dt-spacings-size-16)}.identity h1{font-size:var(--dt-typography-heading-level-3-size)!important}}
+@media(prefers-reduced-motion:reduce){.metric-legend,.car-marker{transition:none}}
+
+/* One shared animation phase for all three podium cards. */
+@property --podium-angle { syntax: '<angle>'; initial-value: 0deg; inherits: true; }
+.podium { animation: podium-orbit 8s linear infinite; }
+.company { position:relative; border:1px solid var(--line); }
+.company::before {
+  content:''; position:absolute; inset:0; border-radius:inherit; padding:1px;
+  background:conic-gradient(from var(--podium-angle), transparent 0% 65%, color-mix(in srgb,var(--racing-purple) 65%,transparent) 82%, transparent 100%);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite:exclude;
+  pointer-events:none;
+}
+@keyframes podium-orbit { to { --podium-angle:360deg; } }
+@media(prefers-reduced-motion:reduce){.podium{animation:none}.company::before{background:color-mix(in srgb,var(--racing-purple) 30%,transparent)}}
+.track-panel::before {
+  content:''; position:absolute; inset:0; border-radius:inherit; padding:1px;
+  background:conic-gradient(from var(--podium-angle), transparent 0% 55%, var(--dt-colors-charts-sequential-purple-color-05-default) 78%, transparent 100%);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite:exclude;
+  pointer-events:none;
+}
+.track-panel { animation:podium-orbit 8s linear infinite; }
+.track-panel::before {padding:2px;}
+@media(prefers-reduced-motion:reduce){.track-panel{animation:none}.track-panel::before{background:var(--racing-purple)}}
+

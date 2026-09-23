@@ -177,7 +177,7 @@ VEHICLE_INFO_SIZE = 72
 def decode_vehicle_names(raw: bytes, size_bytes: int) -> dict:
     """packetType == 8, variante 'vehicle info' (pacote de 1164 bytes). Retorna {index: nome_do_carro}."""
     vehicles = {}
-    if size_bytes < 1164:
+    if size_bytes != 1164:
         return vehicles  # provavelmente a variante 'class names' (1452 bytes) - nao usada aqui
     i = 0
     while True:
@@ -234,6 +234,7 @@ class SessionState:
     car_name: Optional[str] = None
     track_location: Optional[str] = None
     best_lap_s: Optional[float] = None
+    last_lap_s: Optional[float] = None
     _last_car_index: Optional[int] = field(default=None, repr=False)
     _last_participant_index: Optional[int] = field(default=None, repr=False)
 
@@ -254,10 +255,11 @@ class SessionState:
 
     def ingest_time_stats(self, raw: bytes) -> None:
         stats = decode_time_stats(raw)
-        for s in stats.values():
-            if s["fastest_lap_s"] is not None:
-                if self.best_lap_s is None or s["fastest_lap_s"] < self.best_lap_s:
-                    self.best_lap_s = s["fastest_lap_s"]
+        # Never attribute another participant's record to the local driver.
+        s = stats.get(self._last_participant_index)
+        if s:
+            self.last_lap_s = s["last_lap_s"]
+            self.best_lap_s = s["fastest_lap_s"]
 
     def ingest_race_definition(self, raw: bytes) -> None:
         rd = decode_race_definition(raw)
