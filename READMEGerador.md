@@ -48,6 +48,24 @@ O traçado foi extraído de uma volta completa: 467 pontos, simplificados para r
 
 `python replay_server.py` reproduz o piloto original e adiciona **Bruno Lima / Dynatrace**, **Joãozinho / Bradesco** e **Agnes / Caixa**. Os três adicionais têm `source=demo` e `simulation=true`; os vínculos de empresa são fictícios para testar o pódio. A mesma trajetória é reproduzida com ritmo e largada diferentes, gerando 8.324 eventos e quatro tempos finais distintos. Posição e ritmo não são novas capturas de pessoas reais. Não há ingestão nessa demonstração.
 
+### Gerador UDP com variações
+
+`cars2_telemetry_generator.py` reproduz os pacotes CARS2 originais na porta UDP e pode
+alterar campos confirmados da telemetria por percentual. Um valor `10` aumenta o campo
+em 10%; `-20` reduz em 20%; `0` preserva o valor original.
+
+```bash
+python3 cars2_telemetry_generator.py --loop --speed 4 \
+  --speed-pct 10 --throttle-pct 5 --brake-pct -10 --gear-pct -15 \
+  --acceleration-pct 20 --position-x-pct 2 --position-y-pct -3
+```
+
+Os pedais são limitados a `0..100%`, a marcha é arredondada para uma marcha válida e a
+ré é preservada. `--acceleration-pct` altera o vetor de aceleração física XYZ;
+`--throttle-pct` altera o pedal. Para o mapa 2D, `position-y` corresponde ao eixo Z do
+mundo do jogo. Somente pacotes `telemetry` tipo 0 versão 4 são modificados; timings,
+voltas, participantes e demais pacotes continuam idênticos à captura.
+
 Para somente o piloto original: `python replay_server.py --recorded-only`.
 
 O mapa combinado calcula médias espaciais das três medidas. As contribuições relativas usam `(freio/35)^3`, `(aceleração/3.5)^3` e `(velocidade/320)^3`, normalizadas para misturar RGB vermelho, verde e azul. A frenagem recebe ênfase visual. A cor combinada não representa uma unidade física ou um índice oficial; é uma visualização simultânea das três medidas. Os valores numéricos continuam disponíveis na telemetria.
