@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -38,4 +38,12 @@ test('completed clean lap is derived only at the finish and labeled', () => {
   assert.equal(summarize([{...start,lap_invalidated:true},finish])[0].best,null);
   assert.equal(summarize([{...start,lap_time_s:30},finish])[0].best,null);
   assert.equal(summarize([{...start,lap_invalidated:null},finish])[0].best,null);
+});
+
+test('mixed map preserves empty areas and distinguishes all three signals', () => {
+  assert.equal(mixedHeatColor(null,null,null),null);
+  assert.equal(mixedHeatColor(300,0,0),'rgb(52, 145, 255)');
+  assert.equal(mixedHeatColor(0,100,0),'rgb(245, 69, 75)');
+  assert.equal(mixedHeatColor(0,0,3),'rgb(51, 220, 125)');
+  assert.notEqual(mixedHeatColor(250,50,2),mixedHeatColor(250,0,2));
 });

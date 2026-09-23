@@ -8,7 +8,7 @@ import argparse
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -45,7 +45,7 @@ class Replay:
                 event['recorded.timestamp'] = event['timestamp']
                 event['timestamp'] = datetime.now(timezone.utc).isoformat()
                 event['session.id'] = f'local-replay-{self.generation}'
-                event['source'] = 'replay'
+                event['source'] = current.get('source', 'replay')
                 self.events.append(event)
                 self.cursor += 1
                 if self.cursor >= len(self.source):
@@ -122,10 +122,34 @@ def recorded_lap(records):
     return records[start:end + 1]
 
 
+def demo_grid(lap):
+    """Original replay plus three explicitly synthetic participants on the same route."""
+    result = [{**r, 'source': 'replay'} for r in lap]
+    origin = datetime.fromisoformat(lap[0]['timestamp'])
+    profiles = [('Bruno Lima', 'Dynatrace', 1.02, 0), ('Joãozinho', 'Bradesco', .98, 2), ('Agnes', 'Caixa', 1.04, 4)]
+    for index, (name, company, pace, delay) in enumerate(profiles, 2):
+        for row in lap:
+            event = dict(row)
+            elapsed = (datetime.fromisoformat(row['timestamp']) - origin).total_seconds()
+            event.update({'timestamp': (origin + timedelta(seconds=elapsed * pace + delay)).isoformat(),
+                          'driver_name': name, 'company_name': company, 'rig.id': f'demo-{index:02}',
+                          'source': 'demo', 'simulation': True})
+            for field in ('lap_time_s', 'last_lap_s', 'best_lap_s'):
+                if event.get(field) is not None:
+                    event[field] = round(event[field] * pace, 3)
+            if event.get('speed_kmh') is not None:
+                event['speed_kmh'] = round(event['speed_kmh'] / pace, 3)
+            if event.get('acceleration_g') is not None:
+                event['acceleration_g'] = round(event['acceleration_g'] / pace ** 2, 3)
+            result.append(event)
+    return sorted(result, key=lambda r: r['timestamp'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=3001)
     parser.add_argument('--speed', type=float, default=1)
+    parser.add_argument('--recorded-only', action='store_true', help='Only the original captured participant; no synthetic companies')
     args = parser.parse_args()
     if not 0 < args.speed <= 20:
         parser.error('--speed must be between 0 and 20')
@@ -134,14 +158,15 @@ def main():
     lap = recorded_lap(records)
     if not lap:
         raise SystemExit('Run python prepare_capture.py first: timed lap not found')
-    replay = Replay(lap, args.speed)
+    source = lap if args.recorded_only else demo_grid(lap)
+    replay = Replay(source, args.speed)
     stopping = threading.Event()
     def produce():
         while not stopping.wait(.01):
             replay.tick(time.monotonic())
     threading.Thread(target=produce, daemon=True).start()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(replay, 'http://localhost:3000'))
-    print(f'Replay local pronto em http://localhost:{args.port}; {len(lap)} amostras; {args.speed}x; aguardando Iniciar simulação.', flush=True)
+    print(f'Replay local pronto em http://localhost:{args.port}; {len(source)} amostras; {args.speed}x; aguardando Iniciar simulação.', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -14,7 +14,7 @@ A versão **0.2.0** é um checkpoint de desenvolvimento. OpenPipeline, cadastro 
 
 ![Volta concluída e indicadores](docs/images/replay-finished.png)
 
-As imagens usam a captura real. As empresas permanecem vazias porque o UDP não informa esse vínculo.
+As imagens mostram a demonstração: a captura original e três pilotos sintéticos, identificados no app, com empresas de teste.
 
 ## De onde vêm os valores
 
@@ -44,9 +44,17 @@ flowchart LR
 
 O traçado foi extraído de uma volta completa: 467 pontos, simplificados para renderização SVG suave. Cada amostra é associada ao ponto mais próximo, até 35 metros. O calor representa a média por trecho, suavizada entre vizinhos. Trechos sem amostras continuam cinza. Outros pilotos usam o mesmo mapa enquanto estiverem na mesma versão de Interlagos; outra pista exige outro traçado. Os seis marcadores são referências visuais, não a numeração oficial das curvas.
 
+## Demonstração com quatro pilotos
+
+`python replay_server.py` reproduz o piloto original e adiciona **Bruno Lima / Dynatrace**, **Joãozinho / Bradesco** e **Agnes / Caixa**. Os três adicionais têm `source=demo` e `simulation=true`; os vínculos de empresa são fictícios para testar o pódio. A mesma trajetória é reproduzida com ritmo e largada diferentes, gerando 8.324 eventos e quatro tempos finais distintos. Posição e ritmo não são novas capturas de pessoas reais. Não há ingestão nessa demonstração.
+
+Para somente o piloto original: `python replay_server.py --recorded-only`.
+
+O mapa combinado calcula médias espaciais das três medidas. As contribuições relativas usam `(freio/35)^3`, `(aceleração/3.5)^3` e `(velocidade/320)^3`, normalizadas para misturar RGB vermelho, verde e azul. A frenagem recebe ênfase visual. A cor combinada não representa uma unidade física ou um índice oficial; é uma visualização simultânea das três medidas. Os valores numéricos continuam disponíveis na telemetria.
+
 ## Tempos de volta
 
-O replay inclui agora a confirmação após a chegada: **2.081 eventos**, cerca de 104 segundos em 1×. Antes ele parava imediatamente antes dessa confirmação e deixava a última volta vazia.
+O replay inclui agora a confirmação após a chegada: **2.081 eventos por piloto**. A volta original dura cerca de 104 segundos em 1×. Antes ele parava imediatamente antes dessa confirmação e deixava a última volta vazia.
 
 A captura informa `last_lap_s = 104.015`, mas não informa `best_lap_s`. A interface diferencia o melhor tempo informado pelo simulador do melhor calculado entre voltas concluídas. O cálculo local exige observar o início (até 1 segundo), a transição para a próxima volta e nenhuma invalidação nas amostras recebidas. Não transforma tempo parcial ou uma última volta isolada em recorde. Isso não substitui validação oficial quando há perda de pacotes. O indicador **Melhor volta registrada** mostra a origem do cálculo.
 
@@ -69,7 +77,7 @@ Em um segundo terminal, na raiz do repositório:
 python replay_server.py
 ```
 
-Abra http://localhost:3000/ui, escolha **Script · tempo real** e clique em **Iniciar simulação**. A pista começa cinza. As legendas alternam Velocidade, Frenagem e Aceleração. Pausar, Continuar, Limpar pista e Repetir volta controlam o replay. Mantenha o script aberto; Ctrl+C encerra.
+Abra http://localhost:3000/ui, escolha **Script · tempo real** e clique em **Iniciar simulação**. A pista começa cinza. O mapa combina velocidade (azul), frenagem (vermelho) e aceleração em g (verde), sem clicar. As legendas apenas explicam as cores. Pausar, Continuar, Limpar pista e Repetir volta controlam o replay. Mantenha o script aberto; Ctrl+C encerra.
 
 ```powershell
 # Opcional, após encerrar o servidor anterior

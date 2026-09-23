@@ -9,7 +9,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import captureData from './data/capture.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Metric, type Telemetry, finite, lapTime, metrics, number, summarize, driverKey, parseEvents } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -18,12 +18,13 @@ const isLocal = window.location.hostname === 'localhost';
 const QUERY = `fetch bizevents, from: now() - 30m
 | filter event.type == "racing.telemetry"
 | filter isNull(track_name) or track_name == "Interlagos"
-| fields timestamp, driver_name, car_name, rig.id, session.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position
+| fields timestamp, source, driver_name, car_name, rig.id, session.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position
 | sort timestamp desc
 | limit 10000`;
 
 const columns: DataTableColumnDef<Driver>[] = [
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
+  { id: 'source', header: 'Origem', accessor: row => row.source === 'demo' ? 'Simulado' : row.source === 'replay' ? 'Captura' : 'Telemetria' },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
   { id: 'car', header: 'Carro', accessor: 'car_name', minWidth: 220 },
   { id: 'best', header: 'Melhor volta', accessor: 'best', cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
@@ -43,7 +44,6 @@ function Stat({label, value, unit}: {label: string; value: string; unit?: string
 
 export const Dashboard = () => {
   const [mode, setMode] = useState(isLocal ? 'stream' : 'live');
-  const [metric, setMetric] = useState<Metric>('speed_kmh');
   const [playing, setPlaying] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState('all');
@@ -87,19 +87,20 @@ export const Dashboard = () => {
         <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>
       </Flex>
       <Flex alignItems="center" gap={8}>
-        {mode === 'stream' ? <><span className="muted">{stream.speed}× · captura real</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'capture' ? <><span className="muted">Replay 4×</span><Button onClick={() => { if (cursor >= capture.length) setCursor(0); setPlaying(!playing); }} variant="emphasized">{playing ? 'Pausar replay' : !cursor || cursor === capture.length ? 'Reproduzir captura' : 'Continuar replay'}</Button><Button onClick={() => {setCursor(0);setPlaying(false);setSelected('all');}}>Limpar pista</Button></> : <Button onClick={() => { void live.refetch(); }} loading={live.isLoading}>Atualizar</Button>}
+        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'capture' ? <><span className="muted">Replay 4×</span><Button onClick={() => { if (cursor >= capture.length) setCursor(0); setPlaying(!playing); }} variant="emphasized">{playing ? 'Pausar replay' : !cursor || cursor === capture.length ? 'Reproduzir captura' : 'Continuar replay'}</Button><Button onClick={() => {setCursor(0);setPlaying(false);setSelected('all');}}>Limpar pista</Button></> : <Button onClick={() => { void live.refetch(); }} loading={live.isLoading}>Atualizar</Button>}
       </Flex>
     </section>
     {mode === 'stream' && stream.error && <div className="notice error" role="alert">O script local não está conectado. Execute <code>python replay_server.py</code> na raiz do repositório. A pista mantém os últimos dados recebidos até a conexão voltar.</div>}
+    {mode === 'stream' && events.some(e => e.source === 'demo') && <div className="notice" role="status">Demonstração: piloto da captura + Bruno Lima / Dynatrace, Joãozinho / Bradesco e Agnes / Caixa simulados. Tempos e empresas desses três pilotos são dados de teste.</div>}
     {mode === 'live' && live.error && <div className="notice error" role="alert">Não foi possível consultar a telemetria: {live.error.message}. Verifique o acesso a business events e tente atualizar.</div>}
     {mode === 'live' && !live.isLoading && !live.error && !events.length && <div className="notice" role="status">Aguardando novos eventos racing.telemetry. A pista será colorida conforme os eventos chegarem após a abertura deste modo.</div>}
     {mode === 'live' && events.length >= 10000 && <div className="notice">Exibindo os 10.000 eventos mais recentes. O mapa e os indicadores representam essa amostra.</div>}
     <div className="hero-grid">
       <section className="panel track-panel">
         <div className="panel-heading"><div><span className="eyebrow">AUTÓDROMO JOSÉ CARLOS PACE</span><Heading level={2}>Interlagos <span className="track-country">BR</span></Heading></div><span className="track-distance">4,295 <small>km</small></span></div>
-        <div className="metric-tabs" role="group" aria-label="Métrica do mapa de calor">{(Object.keys(metrics) as Metric[]).map(key => <button type="button" className={`metric-legend ${metric === key ? 'selected' : ''}`} key={key} onClick={() => setMetric(key)} aria-pressed={metric === key}><span className={`legend-dot ${key}`}/>{metrics[key].label}</button>)}</div>
-        <TrackMap events={filtered} metric={metric} />
-        <div className="map-footer"><div><span className="eyebrow">{metrics[metric].label.toUpperCase()} MÉDIA POR TRECHO · SUAVIZADA</span><div className="legend"><span>0</span><div className="heat-scale"/><span>{metrics[metric].max} {metrics[metric].unit}</span></div></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : 'Pista cinza · aguardando eventos'}</span></div>
+        <div className="metric-tabs mixed-legend" aria-label="Legenda do mapa combinado"><span><i className="legend-dot speed_kmh"/>Velocidade</span><span><i className="legend-dot brake_pct"/>Frenagem</span><span><i className="legend-dot acceleration_g"/>Aceleração</span></div>
+        <TrackMap events={filtered} />
+        <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : 'Pista cinza · aguardando eventos'}</span></div>
         {mode === 'stream' && stream.running && <progress aria-label="Progresso da simulação" max={stream.total} value={events.length}/>}
         {playing && <progress aria-label="Progresso do replay" max={capture.length} value={cursor}/>}
       </section>
@@ -112,6 +113,6 @@ export const Dashboard = () => {
     <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place">{String(i+1).padStart(2,'0')}</span><div><strong>{companies[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{companies[i] ? companies[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(companies[i]?.best)}</b></div>)}</section>
     <section className="kpis"><div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'Desde a conexão · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div><div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{best ? `${best.driver_name} · ${best.bestSource === 'simulator' ? 'informada pelo simulador' : 'calculada das voltas concluídas'}` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(best?.best)}</strong><div className="kpi-line purple"/></div></section>
     <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth loading={mode === 'live' && live.isLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>
-    <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · reprodução de captura real · novos eventos a cada 50 ms · sem ingestão' : mode === 'capture' ? 'Fonte: captura UDP real do Automobilista 2 · replay local, sem ingestão' : 'Fonte: Grail · racing.telemetry · atualização a cada 5 segundos'}</span></footer>
+    <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · captura e pilotos simulados identificados · sem ingestão' : mode === 'capture' ? 'Fonte: captura UDP real do Automobilista 2 · replay local, sem ingestão' : 'Fonte: Grail · racing.telemetry · atualização a cada 5 segundos'}</span></footer>
   </main>;
 };

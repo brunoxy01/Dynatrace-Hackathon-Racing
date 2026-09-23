@@ -5,6 +5,7 @@ export interface Telemetry {
   'rig.id': string;
   'session.id': string;
   company_name?: string | null;
+  source?: string | null;
   speed_kmh: number | null;
   acceleration_g: number | null;
   gear: number | null;
@@ -35,7 +36,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     const num = (key: string) => finite(r[key]) ? r[key] : null;
     const str = (key: string) => typeof r[key] === 'string' ? r[key] : null;
     return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
-      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', company_name:str('company_name'),
+      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', company_name:str('company_name'), source:str('source'),
       speed_kmh:num('speed_kmh'), acceleration_g:num('acceleration_g'), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:num('pos_x'), pos_y:num('pos_y'), lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
@@ -93,4 +94,15 @@ export function trackHeat(events: Telemetry[], metric: Metric, nodes: number[][]
 export function heatColor(value: number, max: number) {
   const t = Math.max(0, Math.min(1, value / max));
   return `hsl(${210 - 210 * t}, 90%, 54%)`;
+}
+
+// Normalized contributions, with braking emphasized. No physical unit for this composite.
+export function mixedHeatColor(speed: number | null, brake: number | null, acceleration: number | null): string | null {
+  if (speed === null && brake === null && acceleration === null) return null;
+  const weights = [Math.max(0, brake ?? 0) / 35, Math.max(0, acceleration ?? 0) / 3.5, Math.max(0, speed ?? 0) / 320].map(v => v ** 3);
+  const total = weights.reduce((a,b) => a+b,0);
+  if (!total) return 'rgb(52, 145, 255)';
+  const palette = [[245,69,75],[51,220,125],[52,145,255]];
+  const channels = [0,1,2].map(channel => Math.round(weights.reduce((sum,w,i) => sum + w * palette[i][channel],0) / total));
+  return `rgb(${channels.join(', ')})`;
 }
