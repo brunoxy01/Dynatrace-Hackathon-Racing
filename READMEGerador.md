@@ -50,27 +50,6 @@ O traçado foi extraído de uma volta completa: 467 pontos, simplificados para r
 
 ### Gerador UDP com variações
 
-O gerador é uma ferramenta opcional, independente do app publicado. Para validar
-sem enviar dados à tenant, abra dois terminais na raiz do repositório:
-
-```powershell
-# Terminal 1: somente decodificar e imprimir eventos de teste
-python ams2_collector.py --source udp --bind 127.0.0.1 --port 15606 --rig-id ensaio-udp --dry-run
-```
-
-```powershell
-# Terminal 2: uma reprodução local, em porta separada dos simuladores
-python cars2_telemetry_generator.py --host 127.0.0.1 --port 15606 --speed 4 --speed-pct 10
-```
-
-Esse fluxo não alimenta o servidor HTTP `replay_server.py` nem o Grail automaticamente.
-O UDP mantém os nomes e tempos da captura, não cria novos pilotos/empresas e não
-marca os pacotes como sintéticos. Evite encaminhá-lo ao coletor de produção: os
-valores alterados poderiam entrar no histórico e ranking como telemetria real.
-Variações de posição podem afastar pontos do traçado; mudanças de velocidade não
-recalculam tempos de volta. Para verificar os scripts: `python -m unittest discover`.
-
-
 `cars2_telemetry_generator.py` reproduz os pacotes CARS2 originais na porta UDP e pode
 alterar campos confirmados da telemetria por percentual. Um valor `10` aumenta o campo
 em 10%; `-20` reduz em 20%; `0` preserva o valor original.
