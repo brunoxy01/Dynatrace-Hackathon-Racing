@@ -34,7 +34,7 @@ export function TrackMap({events}: {events: Telemetry[]}) {
     <g fill="none" strokeWidth="5" strokeLinecap="round">{segments.map((d,i) => colors[i] !== null && colors[(i+1)%colors.length] !== null ? <path key={i} d={d} stroke={`url(#${id}-heat-${i})`}/> : null)}</g>
     {referencePoints.map((index,i) => <g key={index}><circle cx={points[index].x} cy={points[index].y} r="4" fill="var(--dt-colors-background-base-default, #202132)" stroke="#e4d6fc" strokeWidth="1.5"/><text x={points[index].x+10} y={points[index].y-10} className="reference-label">{String(i+1).padStart(2,'0')}</text><title>Ponto de referência {i+1} · cores combinadas dos eventos recebidos</title></g>)}
     <g transform={`translate(${start.x},${start.y})`}><path d="M-10 -8 h20 v16 h-20z" fill="white"/><path d="M-10 -8h5v8h-5z M0 -8h5v8h-5z M-5 0h5v8h-5z M5 0h5v8h-5z" fill="#20262e"/><text x="-16" y="-19" className="map-label">LARGADA</text></g>
-    <g className="event-car" transform="translate(-16 0)" aria-label="Porsche 911">
+    <g className="event-car" transform="translate(-34 0)" aria-label="Porsche 911">
       <image href="./assets/porsche-911.png" x="4" y="346" width="146" height="82" preserveAspectRatio="xMidYMid meet"/>
       <text x="77" y="434" textAnchor="middle" fill="currentColor" fontSize="10" fontWeight="600">Porsche 911</text>
     </g>

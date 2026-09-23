@@ -25,19 +25,19 @@ const QUERY = `fetch bizevents
 | limit 10000`;
 
 const columns: DataTableColumnDef<Driver>[] = [
-  { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
-  { id: 'source', header: 'Origem', accessor: row => row.source === 'demo' ? 'Simulado' : row.source === 'replay' ? 'Captura' : 'Telemetria' },
-  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
-  { id: 'car', header: 'Carro na telemetria', accessor: 'car_name', minWidth: 220 },
-  { id: 'best', header: 'Melhor volta', accessor: 'best', cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
-  { id: 'speed', header: 'km/h', accessor: 'speed_kmh', cell: ({rowData}) => <>{number(rowData.speed_kmh, 1)}</> },
-  { id: 'accel', header: 'Aceleração (g)', accessor: 'acceleration_g', cell: ({rowData}) => <>{number(rowData.acceleration_g, 2)}</> },
-  { id: 'gear', header: 'Marcha', accessor: 'gear' },
-  { id: 'brake', header: 'Freio (%)', accessor: 'brake_pct' },
-  { id: 'position', header: 'Posição X / Y', accessor: row => `${number(row.pos_x, 1)} / ${number(row.pos_y, 1)}`, minWidth: 160 },
-  { id: 'lap', header: 'Volta', accessor: 'lap_number' },
-  { id: 'time', header: 'Tempo atual', accessor: row => lapTime(row.lap_time_s) },
-  { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position' },
+  { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 105 },
+  { id: 'source', header: 'Origem', accessor: row => row.source === 'demo' ? 'Simulado' : row.source === 'replay' ? 'Captura' : 'Telemetria', minWidth: 90 },
+  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 115 },
+  { id: 'car', header: 'Carro utilizado', accessor: () => 'Porsche 911', minWidth: 120 },
+  { id: 'best', header: 'Melhor volta', accessor: 'best', alignment: 'right', minWidth: 110, cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
+  { id: 'speed', header: 'km/h', accessor: 'speed_kmh', alignment: 'right', minWidth: 70, cell: ({rowData}) => <>{number(rowData.speed_kmh, 1)}</> },
+  { id: 'accel', header: 'Aceleração (g)', accessor: 'acceleration_g', alignment: 'right', minWidth: 120, cell: ({rowData}) => <>{number(rowData.acceleration_g, 2)}</> },
+  { id: 'gear', header: 'Marcha', accessor: 'gear', alignment: 'right', minWidth: 80 },
+  { id: 'brake', header: 'Freio (%)', accessor: 'brake_pct', alignment: 'right', minWidth: 88 },
+  { id: 'position', header: 'Posição X / Y', accessor: row => `${number(row.pos_x, 1)} / ${number(row.pos_y, 1)}`, alignment: 'right', minWidth: 125 },
+  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70 },
+  { id: 'time', header: 'Tempo atual', accessor: row => lapTime(row.lap_time_s), alignment: 'right', minWidth: 108 },
+  { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position', alignment: 'right', minWidth: 145 },
 ];
 
 function Stat({label, value, unit}: {label: string; value: string; unit?: string}) {
