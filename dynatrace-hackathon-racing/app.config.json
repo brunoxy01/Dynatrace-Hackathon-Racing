@@ -2,10 +2,10 @@
   "environmentUrl": "https://bwm98081.apps.dynatrace.com",
   "app": {
     "name": "Dynatrace Hackathon Racing",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Telemetria do AMS2, mapa de calor de Interlagos e ranking de pilotos.",
     "id": "my.dynatrace.hackathon.racing",
-    "icon": "ui/assets/racing-logo.png",
+    "icon": "ui/assets/racing-icon.png",
     "scopes": [
       { "name": "storage:buckets:read", "comment": "default template" },
       { "name": "storage:metrics:read", "comment": "default template" },

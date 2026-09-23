@@ -24,7 +24,7 @@ export function TrackMap({events}: {events: Telemetry[]}) {
   }, [events]);
   const cars = useMemo(() => {
     const latest = new Map<string,Telemetry>();
-    for (const e of events) if (finite(e.pos_x) && finite(e.pos_y)) latest.set(driverKey(e),e);
+    for (const e of events) if (finite(e.pos_x) && finite(e.pos_y)) { const key=driverKey(e); if (!latest.has(key) || Date.parse(e.timestamp) > Date.parse(latest.get(key)!.timestamp)) latest.set(key,e); }
     return [...latest.values()];
   }, [events]);
   return <svg className="track-map" viewBox="0 0 680 450" role="img" aria-label="Mapa de Interlagos com velocidade em azul, frenagem em vermelho e aceleração em verde">

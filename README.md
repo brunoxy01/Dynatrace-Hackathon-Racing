@@ -6,7 +6,7 @@ App em desenvolvimento para um evento da Dynatrace: participantes pilotam em sim
 
 Fomos a um local com simuladores e capturamos os pacotes UDP do Automobilista 2 usando um script Python. O dump `captura.txt` conserva timestamp, endereço, tamanho e bytes em hexadecimal. A partir desses pacotes, decodificamos os dados do carro e construímos o app. A captura de 19/09/2026 permite desenvolver sem conexão com o simulador.
 
-A versão **0.2.0** é um checkpoint de desenvolvimento. OpenPipeline, cadastro piloto/empresa, logos e workflow de métricas são próximos passos; não estão provisionados nesta release.
+A versão **0.3.0** é um checkpoint de desenvolvimento. OpenPipeline, cadastro piloto/empresa, logos e workflow de métricas são próximos passos; não estão provisionados nesta release.
 
 ## Prints do app
 
@@ -22,7 +22,7 @@ As imagens mostram a demonstração: a captura original e três pilotos sintéti
 flowchart LR
   A[Automobilista 2] -->|UDP| B[ams2_collector.py]
   B -->|JSON racing.telemetry| C[Business Events / Grail]
-  C -->|DQL a cada 5 segundos| D[App Dynatrace]
+  C -->|DQL no período selecionado| D[App Dynatrace]
   E[captura.txt] --> F[prepare_capture.py]
   F --> G[capture.json e interlagos.json]
   G --> H[replay_server.py]
@@ -65,7 +65,7 @@ Pré-requisitos: Git, Python 3.10+ e Node.js 22.18+ (recomendado, inclusive para
 ```powershell
 git clone https://github.com/brunoxy01/Dynatrace-Hackathon-Racing.git
 cd Dynatrace-Hackathon-Racing
-git checkout v0.2.0
+git checkout v0.3.0
 cd dynatrace-hackathon-racing
 npm ci
 npm start -- --no-open --port 3000
@@ -93,7 +93,7 @@ python prepare_capture.py
 1. No AMS2, habilite a saída UDP e selecione o protocolo Project CARS 2. Confira frequência e porta no local; o coletor usa 5606 por padrão.
 2. Execute um coletor por simulador, com `rig-id` diferente. Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
 3. Antes de cada nova participação, reinicie o coletor para gerar nova `session.id`. Confirme o nome no jogo: o mesmo perfil sem separar sessões mistura participantes.
-4. Abra **Grail · novos eventos** antes da largada. Esse modo considera eventos desde sua abertura, dentro da consulta de 30 minutos e limite de 10.000 registros. Para vários simuladores ou classificação de todo o evento, ainda é necessário agregar/persistir resultados no backend.
+4. Abra **Grail · histórico e ao vivo** e selecione o período desejado. O padrão são os últimos 7 dias; o seletor Strato oferece horas, hoje, ontem e datas personalizadas. Intervalos terminando em agora atualizam a cada 30 segundos; períodos fechados podem ser atualizados manualmente. A consulta retorna até 10.000 eventos recentes no intervalo e avisa quando atinge esse limite. Rankings representam essa amostra; para classificar todo o evento ainda é necessário persistir/agregar resultados no backend.
 
 Primeiro, teste sem ingestão:
 
@@ -144,7 +144,17 @@ A release no GitHub guarda código e pacote construído; não faz deploy no Dyna
 Para retomar a partir desta release:
 
 ```powershell
-git switch -c feature/proximas-melhorias v0.2.0
+git switch -c feature/proximas-melhorias v0.3.0
 ```
 
 Próxima etapa: cadastro piloto/empresa, enriquecimento no OpenPipeline, logos aprovadas e workflow/agregações de resultados duráveis. Também falta validar troca de sessões, perda de UDP e carga com todos os simuladores reais.
+
+## Acesso na tenant
+
+Ambiente configurado: https://bwm98081.apps.dynatrace.com
+
+App: https://bwm98081.apps.dynatrace.com/ui/apps/my.dynatrace.hackathon.racing
+
+O seletor de período consulta eventos já ingeridos no Grail. A demonstração executada pelo servidor local não grava eventos na tenant; por isso ampliar o período não transforma essas simulações em histórico. O app publicado oferece também o replay da captura empacotada, sem depender do servidor Python. O modo Script é exclusivo do preview localhost.
+
+Para republicar alterações validadas: `npm run deploy -- --no-open` na pasta `dynatrace-hackathon-racing`. A conta Dynatrace precisa de permissão para instalar/atualizar apps.
