@@ -7,3 +7,15 @@ dist/
 build/
 *.log
 captura 2.txt
+
+# Rig: credenciais e binarios baixados na maquina do simulador
+rig/config.bat
+rig/*.exe
+rig/collector.zip
+rig/LICENSE*
+rig/*.md5
+# Fila em disco do collector e saidas de ensaio
+fila-otel/
+otel/fila-otel/
+otel/recebido.jsonl
+

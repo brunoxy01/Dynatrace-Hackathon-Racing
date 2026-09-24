@@ -10,7 +10,8 @@
       { "name": "storage:buckets:read", "comment": "default template" },
       { "name": "storage:metrics:read", "comment": "default template" },
       { "name": "storage:entities:read", "comment": "default template" },
-      { "name": "storage:bizevents:read", "comment": "ler os eventos racing.telemetry" }
+      { "name": "storage:bizevents:read", "comment": "ler os eventos racing.telemetry" },
+      { "name": "storage:logs:read", "comment": "ler a telemetria que chega pelo OTel Collector dos rigs" }
     ]
   }
 }

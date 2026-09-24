@@ -11,16 +11,27 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import captureData from './data/capture.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
 const capture = parseEvents(captureData);
 const isLocal = window.location.hostname === 'localhost';
+const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
+// Duas fontes independentes para a mesma telemetria: a API de business events
+// (ams2_collector.py --sink bizevents) e os logs OTLP que o OTel Collector do rig
+// entrega (--sink otlp). Queries separadas de propósito: se o pipeline OTel ainda
+// não estiver de pé, a consulta de bizevents continua respondendo sozinha.
 const QUERY = `fetch bizevents
 | filter event.type == "racing.telemetry"
 | filter isNull(track_name) or track_name == "Interlagos"
-| fields timestamp, source, driver_name, car_name, rig.id, session.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position
+| fields ${FIELDS}
+| sort timestamp desc
+| limit 10000`;
+const QUERY_OTEL = `fetch logs
+| filter event.type == "racing.telemetry"
+| filter isNull(track_name) or track_name == "Interlagos"
+| fields ${FIELDS}
 | sort timestamp desc
 | limit 10000`;
 
@@ -54,14 +65,16 @@ export const Dashboard = () => {
   const bounds = useMemo(() => ({from:parseTimeAsTimeValue(timeframe.from, queryTime)?.absoluteDate, to:parseTimeAsTimeValue(timeframe.to, queryTime)?.absoluteDate}), [timeframe, queryTime]);
   useEffect(() => {if (mode !== 'live' || timeframe.to !== 'now()') return; const timer = window.setInterval(() => setQueryTime(Date.now()), 30000); return () => window.clearInterval(timer);}, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
-  const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: mode === 'live' && Boolean(bounds.from && bounds.to) });
+  const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
+  const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
+  const liveOtel = useDql<Telemetry>({ query: QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
   useEffect(() => {
     if (!playing || mode !== 'capture') return;
     const timer = window.setInterval(() => setCursor(v => Math.min(capture.length, v + 20)), 250);
     return () => window.clearInterval(timer);
   }, [playing, mode]);
   useEffect(() => { if (cursor >= capture.length) setPlaying(false); }, [cursor]);
-  const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : parseEvents(live.data?.records), [mode, cursor, live.data, stream.events]);
+  const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : mergeTelemetry(parseEvents(live.data?.records), parseEvents(liveOtel.data?.records)), [mode, cursor, live.data, liveOtel.data, stream.events]);
   const drivers = useMemo(() => summarize(events), [events]);
   const filtered = useMemo(() => selected === 'all' ? events : events.filter(e => driverKey(e) === selected), [events, selected]);
   const focus = selected === 'all' ? drivers[0] : drivers.find(d => d.key === selected);
@@ -75,12 +88,13 @@ export const Dashboard = () => {
     }
     return [...map.values()].sort((a,b) => a.best! - b.best!).slice(0,3);
   }, [drivers]);
+  const liveLoading = live.isLoading || liveOtel.isLoading;
   const changeMode = (value: string | null) => { if (value) { setMode(value); setQueryTime(Date.now()); setPlaying(false); setSelected('all'); if (value === 'capture') setCursor(0); } };
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
       <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div></div>
-      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real · 19 set 2026' : live.isLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real · 19 set 2026' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
     </header>
     <section className="toolbar" aria-label="Controles da corrida">
       <Flex alignItems="center" gap={12} flexWrap="wrap">
@@ -89,13 +103,14 @@ export const Dashboard = () => {
         <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>
       </Flex>
       <Flex alignItems="center" gap={8}>
-        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'capture' ? <><span className="muted">Replay 4×</span><Button onClick={() => { if (cursor >= capture.length) setCursor(0); setPlaying(!playing); }} variant="emphasized">{playing ? 'Pausar replay' : !cursor || cursor === capture.length ? 'Reproduzir captura' : 'Continuar replay'}</Button><Button onClick={() => {setCursor(0);setPlaying(false);setSelected('all');}}>Limpar pista</Button></> : <Button onClick={() => { if (timeframe.to === 'now()') setQueryTime(Date.now()); else void live.refetch(); }} loading={live.isLoading}>Atualizar</Button>}
+        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'capture' ? <><span className="muted">Replay 4×</span><Button onClick={() => { if (cursor >= capture.length) setCursor(0); setPlaying(!playing); }} variant="emphasized">{playing ? 'Pausar replay' : !cursor || cursor === capture.length ? 'Reproduzir captura' : 'Continuar replay'}</Button><Button onClick={() => {setCursor(0);setPlaying(false);setSelected('all');}}>Limpar pista</Button></> : <Button onClick={() => { if (timeframe.to === 'now()') setQueryTime(Date.now()); else { void live.refetch(); void liveOtel.refetch(); } }} loading={liveLoading}>Atualizar</Button>}
       </Flex>
     </section>
     {mode === 'stream' && stream.error && <div className="notice error" role="alert">O script local não está conectado. Execute <code>python replay_server.py</code> na raiz do repositório. A pista mantém os últimos dados recebidos até a conexão voltar.</div>}
     {mode === 'stream' && events.some(e => e.source === 'demo') && <div className="notice" role="status">Demonstração: piloto da captura + Bruno Lima / Dynatrace, Joãozinho / Bradesco e Agnes / Caixa simulados. Tempos e empresas desses três pilotos são dados de teste.</div>}
     {mode === 'live' && live.error && <div className="notice error" role="alert">Não foi possível consultar a telemetria: {live.error.message}. Verifique o acesso a business events e tente atualizar.</div>}
-    {mode === 'live' && !live.isLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos foi encontrado no período selecionado. Amplie o intervalo ou confira a ingestão. Os eventos do script local não são enviados ao Grail.</div>}
+    {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos foi encontrado no período selecionado. Amplie o intervalo ou confira a ingestão. Os eventos do script local não são enviados ao Grail.</div>}
+    {mode === 'live' && !live.error && liveOtel.error && <div className="notice" role="status">A fonte OTel (logs do collector do rig) não respondeu: {liveOtel.error.message}. O painel segue mostrando os business events. Confira o escopo <code>storage:logs:read</code> e se o collector do rig está de pé.</div>}
     {mode === 'live' && events.length >= 10000 && <div className="notice">Exibindo os 10.000 eventos mais recentes. O mapa e os indicadores representam essa amostra.</div>}
     <div className="hero-grid">
       <section className="panel track-panel">
@@ -114,7 +129,7 @@ export const Dashboard = () => {
     <div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
     <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place">{String(i+1).padStart(2,'0')}</span><div><strong>{companies[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{companies[i] ? companies[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(companies[i]?.best)}</b></div>)}</section>
     <section className="kpis"><div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div><div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{best ? `${best.driver_name} · ${best.bestSource === 'simulator' ? 'informada pelo simulador' : 'calculada das voltas concluídas'}` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(best?.best)}</strong><div className="kpi-line purple"/></div></section>
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth loading={mode === 'live' && live.isLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth loading={mode === 'live' && liveLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>
     <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · captura e pilotos simulados identificados · sem ingestão' : mode === 'capture' ? 'Fonte: captura UDP real do Automobilista 2 · replay local, sem ingestão' : 'Fonte: Grail · racing.telemetry · período selecionado · intervalos até agora atualizam a cada 30 segundos'}</span></footer>
   </main>;
 };

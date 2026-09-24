@@ -4,6 +4,7 @@ export interface Telemetry {
   car_name: string | null;
   'rig.id': string;
   'session.id': string;
+  'sample.id'?: string | null;
   company_name?: string | null;
   source?: string | null;
   speed_kmh: number | null;
@@ -36,12 +37,30 @@ export function parseEvents(input: unknown): Telemetry[] {
     const num = (key: string) => finite(r[key]) ? r[key] : null;
     const str = (key: string) => typeof r[key] === 'string' ? r[key] : null;
     return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
-      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', company_name:str('company_name'), source:str('source'),
+      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), company_name:str('company_name'), source:str('source'),
       speed_kmh:num('speed_kmh'), acceleration_g:num('acceleration_g'), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:num('pos_x'), pos_y:num('pos_y'), lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
   });
 }
+// A mesma amostra pode chegar ao Grail por dois caminhos: bizevents (API direta)
+// e logs (OTel Collector do rig). O coletor carimba sample.id igual nos dois, então
+// basta manter a primeira ocorrência. Amostras sem sample.id são de execuções
+// antigas e caem num fallback por piloto + instante, nunca colapsando umas nas outras.
+export function mergeTelemetry(...sources: Telemetry[][]): Telemetry[] {
+  const seen = new Set<string>();
+  const merged: Telemetry[] = [];
+  for (const source of sources) {
+    for (const event of source) {
+      const key = event['sample.id'] ?? `${event.timestamp}|${driverKey(event)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(event);
+    }
+  }
+  return merged;
+}
+
 export function lapTime(value: number | null | undefined): string {
   if (!finite(value) || value <= 0) return '—';
   const ms = Math.round(value * 1000);

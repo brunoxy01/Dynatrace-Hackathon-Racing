@@ -20,9 +20,12 @@ As imagens mostram a demonstração: a captura original e três pilotos sintéti
 
 ```mermaid
 flowchart LR
-  A[Automobilista 2] -->|UDP| B[ams2_collector.py]
+  A[Automobilista 2] -->|UDP 5606| B[ams2_collector.py]
   B -->|JSON racing.telemetry| C[Business Events / Grail]
+  B -->|OTLP 127.0.0.1:4318| J[OTel Collector do rig]
+  J -->|logs OTLP| K[Logs / Grail]
   C -->|DQL no período selecionado| D[App Dynatrace]
+  K -->|DQL no período selecionado| D
   E[captura.txt] --> F[prepare_capture.py]
   F --> G[capture.json e interlagos.json]
   G --> H[replay_server.py]
@@ -152,6 +155,25 @@ O envio real consome ingestão. O coletor registra falhas HTTP, mas não possui 
 
 Referência: [ingestão de business events](https://docs.dynatrace.com/docs/observe/business-observability/bo-events-capturing/bo-events-capturing-external-sources). OpenPipeline recebe o JSON decodificado, não os bytes UDP diretamente.
 
+### Caminho alternativo: OTel Collector no rig
+
+Além da API de business events, o coletor entrega a mesma telemetria via OTLP a um **OTel Collector rodando na própria máquina do simulador**, que repassa ao Dynatrace como logs. `--sink` escolhe os destinos: `bizevents` (padrão), `otlp` ou `both`.
+
+Por que os dois caminhos coexistem: business events e OTLP são ingestões distintas e **não se convertem entre si** — um collector não consegue produzir bizevents, e OTLP sempre cai em `logs`/`spans`/`metrics`. Em vez de escolher um e arriscar, o app consulta as duas fontes com queries independentes e junta os resultados deduplicando por `sample.id`. Se um dos caminhos estiver fora do ar, o painel continua funcionando com o outro.
+
+O caminho OTLP ganha o que a API direta não tem: **fila em disco e reenvio automático**. Se a rede do evento oscilar, o collector segura as amostras em `fila-otel/` e as entrega depois.
+
+Para os rigs Windows, use o pacote de duplo clique em [rig/](rig/README.md). Para ensaiar a cadeia inteira sem gastar ingestão nem precisar de token:
+
+```bash
+python3 otel/endpoint_falso.py                                        # terminal 1
+./dynatrace-otel-collector --config otel/otelcol-teste-local.yaml     # terminal 2
+python3 ams2_collector.py --source udp --port 15606 --rig-id ensaio --sink otlp  # terminal 3
+python3 cars2_telemetry_generator.py --host 127.0.0.1 --port 15606 --speed 20    # terminal 4
+```
+
+O token de ingestão precisa de `bizevents.ingest` **e** `logs.ingest`. O app precisa dos escopos `storage:bizevents:read` e `storage:logs:read`.
+
 ## Validar e publicar no ambiente
 
 ```powershell
@@ -172,7 +194,9 @@ A release no GitHub guarda código e pacote construído; não faz deploy no Dyna
 ## Estrutura e continuidade
 
 - `ams2_protocol.py`: decodificador UDP.
-- `ams2_collector.py`: coleta ao vivo ou replay para ingestão.
+- `ams2_collector.py`: coleta ao vivo ou replay para ingestão. `--sink bizevents|otlp|both` escolhe os destinos.
+- `rig/`: pacote de duplo clique para os simuladores Windows. Ver [rig/README.md](rig/README.md).
+- `otel/`: config do OTel Collector do rig (`otelcol-racing.yaml`) e o ensaio sem Dynatrace (`otelcol-teste-local.yaml` + `endpoint_falso.py`).
 - `captura.txt`: dump original usado nos testes.
 - `prepare_capture.py`: reconstrução da telemetria e do traçado.
 - `replay_server.py`: servidor local em loopback, porta 3001.

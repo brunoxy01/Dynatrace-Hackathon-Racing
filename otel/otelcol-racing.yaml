@@ -1,0 +1,66 @@
+# OTel Collector do rig - Dynatrace Hackathon Racing
+#
+# Roda DENTRO da maquina do simulador, ao lado do ams2_collector.py. O script
+# Python escuta o UDP do AMS2, decodifica e entrega OTLP aqui; este collector
+# faz o batch, a fila em disco e o envio para o Dynatrace.
+#
+# Variaveis de ambiente obrigatorias (ver rig/config.exemplo.bat):
+#   DT_OTLP_ENDPOINT  https://SEU_AMBIENTE.live.dynatrace.com/api/v2/otlp
+#   DT_API_TOKEN      token com escopo logs.ingest
+#
+# O receiver escuta so' em 127.0.0.1: o rig nao precisa aceitar telemetria de
+# fora da propria maquina.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Protege a maquina de jogo: se o collector passar do limite, ele rejeita
+  # novos lotes em vez de competir por memoria com o simulador.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  batch:
+    send_batch_size: 200
+    send_batch_max_size: 500
+    timeout: 5s
+
+extensions:
+  # Fila em disco: se a rede do evento cair, as amostras ficam guardadas e sao
+  # reenviadas quando a conexao voltar, em vez de se perderem.
+  file_storage/fila:
+    directory: ./fila-otel
+    create_directory: true
+    timeout: 10s
+
+exporters:
+  otlp_http/dynatrace:
+    endpoint: ${env:DT_OTLP_ENDPOINT}
+    headers:
+      Authorization: Api-Token ${env:DT_API_TOKEN}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      storage: file_storage/fila
+      num_consumers: 2
+      queue_size: 1000
+
+service:
+  extensions: [file_storage/fila]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/dynatrace]
+  telemetry:
+    logs:
+      level: info

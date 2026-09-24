@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -46,4 +46,25 @@ test('mixed map preserves empty areas and distinguishes all three signals', () =
   assert.equal(mixedHeatColor(0,100,0),'rgb(245, 69, 75)');
   assert.equal(mixedHeatColor(0,0,3),'rgb(51, 220, 125)');
   assert.notEqual(mixedHeatColor(250,50,2),mixedHeatColor(250,0,2));
+});
+
+test('the same sample arriving by bizevents and by otel is counted once', () => {
+  const biz = {...sample, 'sample.id':'rig-01|s1|1'};
+  const otel = {...biz};
+  assert.equal(mergeTelemetry([biz],[otel]).length, 1);
+  assert.equal(mergeTelemetry([biz],[{...otel,'sample.id':'rig-01|s1|2'}]).length, 2);
+  // rigs diferentes geram sample.id diferente mesmo no mesmo instante
+  assert.equal(mergeTelemetry([biz],[{...otel,'sample.id':'rig-02|s1|1'}]).length, 2);
+});
+
+test('samples without sample.id never collapse into each other', () => {
+  const a = {...sample};
+  const b = {...sample, timestamp:'2026-09-19T00:00:01Z'};
+  const other = {...sample, driver_name:'Outro'};
+  assert.equal(mergeTelemetry([a],[b]).length, 2);
+  assert.equal(mergeTelemetry([a],[other]).length, 2);
+  assert.equal(mergeTelemetry([a],[{...a}]).length, 1);
+  // uma fonte vazia nao interfere na outra
+  assert.equal(mergeTelemetry([a,b],[]).length, 2);
+  assert.equal(mergeTelemetry([],[a,b]).length, 2);
 });

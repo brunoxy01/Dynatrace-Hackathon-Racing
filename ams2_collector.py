@@ -56,6 +56,8 @@ from ams2_protocol import (
 EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
 DEFAULT_UDP_PORT = 5606
+DEFAULT_OTLP_ENDPOINT = "http://127.0.0.1:4318/v1/logs"
+OTLP_SERVICE_NAME = "ams2-rig"
 
 
 def iso_now() -> str:
@@ -63,9 +65,13 @@ def iso_now() -> str:
 
 
 def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState,
-                 telemetry: dict, timings: Optional[dict], source: str) -> dict:
+                 telemetry: dict, timings: Optional[dict], source: str,
+                 sample_seq: int = 0) -> dict:
     return {
         "timestamp": iso_now(),
+        # Identidade unica da amostra. Quando bizevents e OTLP rodam juntos o mesmo
+        # frame chega ao Grail por dois caminhos; a DQL do app usa isto para deduplicar.
+        "sample.id": f"{rig_id}|{session_id}|{sample_seq}",
         "event.type": EVENT_TYPE,
         "event.provider": EVENT_PROVIDER,
         "source": source,  # "real" (udp/replay) ou "mock"
@@ -90,22 +96,78 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
     }
 
 
-def post_events(url: str, token: Optional[str], events: list, timeout: float = 10.0) -> None:
-    if not events:
-        return
-    body = json.dumps(events).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Api-Token {token}"
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.0) -> bool:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
+        return True
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
-        print(f"[erro] HTTP {e.code} ao enviar {len(events)} evento(s): {detail[:300]}", file=sys.stderr)
+        print(f"[erro] {what}: HTTP {e.code} - {detail[:300]}", file=sys.stderr)
     except urllib.error.URLError as e:
-        print(f"[erro] falha de conexao: {e}", file=sys.stderr)
+        print(f"[erro] {what}: falha de conexao - {e}", file=sys.stderr)
+    return False
+
+
+def post_events(url: str, token: Optional[str], events: list, timeout: float = 10.0) -> None:
+    """Envia para a Business Events API (/api/v2/bizevents/ingest)."""
+    if not events:
+        return
+    headers = {"Authorization": f"Api-Token {token}"} if token else {}
+    _post_json(url, events, headers, f"bizevents ({len(events)} evento(s))", timeout)
+
+
+def _otlp_value(value):
+    """Converte um valor Python no AnyValue do OTLP. So' escalares: manter tudo
+    plano garante que cada campo vire um atributo de topo no Grail, identico ao
+    bizevent, tanto no modelo raw quanto no flattened."""
+    if isinstance(value, bool):
+        return {"boolValue": value}
+    if isinstance(value, int):
+        return {"intValue": str(value)}
+    if isinstance(value, float):
+        return {"doubleValue": value}
+    return {"stringValue": str(value)}
+
+
+def build_otlp_payload(events: list) -> dict:
+    """Monta um ExportLogsServiceRequest em OTLP/HTTP JSON.
+
+    Usa urllib da stdlib de proposito: os rigs sao maquinas de jogo Windows e
+    exigir `pip install opentelemetry-sdk` neles seria atrito desnecessario.
+    """
+    records = []
+    for event in events:
+        nanos = int(datetime.fromisoformat(event["timestamp"]).timestamp() * 1_000_000_000)
+        attributes = [
+            {"key": key, "value": _otlp_value(value)}
+            for key, value in event.items()
+            if value is not None and key != "timestamp"
+        ]
+        records.append({
+            "timeUnixNano": str(nanos),
+            "observedTimeUnixNano": str(nanos),
+            "severityNumber": 9,
+            "severityText": "INFO",
+            "body": {"stringValue": EVENT_TYPE},
+            "attributes": attributes,
+        })
+    return {"resourceLogs": [{
+        "resource": {"attributes": [
+            {"key": "service.name", "value": {"stringValue": OTLP_SERVICE_NAME}},
+            {"key": "telemetry.sdk.language", "value": {"stringValue": "python"}},
+        ]},
+        "scopeLogs": [{"scope": {"name": EVENT_PROVIDER}, "logRecords": records}],
+    }]}
+
+
+def post_otlp(url: str, events: list, timeout: float = 10.0) -> None:
+    """Envia para o OTel Collector local, que repassa ao Dynatrace."""
+    if not events:
+        return
+    _post_json(url, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))", timeout)
 
 
 class Collector:
@@ -116,6 +178,7 @@ class Collector:
         self.session_id = session_id
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
+        self._sample_seq = 0
 
     def handle_packet(self, raw: bytes) -> Optional[dict]:
         """Processa um pacote UDP cru; retorna um evento pronto quando um
@@ -136,43 +199,81 @@ class Collector:
             self.state.ingest_vehicle_names(raw, len(raw))
         elif header.packet_type == 0:
             telemetry = decode_telemetry(raw)
+            self._sample_seq += 1
             return build_event(
                 self.rig_id, self.rig_name, self.session_id, self.state,
-                telemetry, self._last_timings, self.source_label,
+                telemetry, self._last_timings, self.source_label, self._sample_seq,
             )
         return None
 
 
-def run_udp(args, ingest_url: Optional[str]) -> int:
+class Dispatcher:
+    """Entrega cada lote aos destinos escolhidos em --sink."""
+
+    def __init__(self, args, ingest_url: Optional[str]):
+        self.args = args
+        self.ingest_url = ingest_url
+        self.to_bizevents = args.sink in ("bizevents", "both") and bool(ingest_url) and not args.dry_run
+        self.to_otlp = args.sink in ("otlp", "both") and not args.dry_run
+
+    def describe(self) -> str:
+        if self.args.dry_run:
+            return "dry-run (stdout, sem ingestao)"
+        destinations = []
+        if self.to_bizevents:
+            destinations.append(f"bizevents -> {self.ingest_url}")
+        if self.to_otlp:
+            destinations.append(f"otlp -> {self.args.otlp_endpoint}")
+        return " | ".join(destinations) or "nenhum destino ativo"
+
+    def enabled(self) -> bool:
+        return self.to_bizevents or self.to_otlp
+
+    def flush(self, batch: list) -> None:
+        if not batch:
+            return
+        if self.to_bizevents:
+            post_events(self.ingest_url, self.args.token, batch)
+        if self.to_otlp:
+            post_otlp(self.args.otlp_endpoint, batch)
+
+
+def run_udp(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
     print(f"[info] escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
+    print(f"[info] destino: {dispatcher.describe()}")
 
     batch = []
+    sent = 0
     last_flush = time.time()
     try:
         while True:
             raw, _addr = sock.recvfrom(4096)
             ev = collector.handle_packet(raw)
             if ev:
-                if args.dry_run or not ingest_url:
+                if not dispatcher.enabled():
                     print(json.dumps(ev, ensure_ascii=False))
                 else:
                     batch.append(ev)
             if batch and (time.time() - last_flush >= args.flush_interval or len(batch) >= args.batch_size):
-                post_events(ingest_url, args.token, batch)
+                dispatcher.flush(batch)
+                sent += len(batch)
                 batch = []
                 last_flush = time.time()
+                print(f"[info] {sent} amostras enviadas", end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")
-        if batch and ingest_url and not args.dry_run:
-            post_events(ingest_url, args.token, batch)
+        dispatcher.flush(batch)
+        sent += len(batch)
+        print(f"[info] total enviado: {sent} amostras")
     return 0
 
 
-def run_replay(args, ingest_url: Optional[str]) -> int:
+def run_replay(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real")
+    print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
         with open(args.file, "r", encoding="utf-8") as f:
@@ -204,17 +305,16 @@ def run_replay(args, ingest_url: Optional[str]) -> int:
             ev = collector.handle_packet(raw)
             n += 1
             if ev:
-                if args.dry_run or not ingest_url:
+                if not dispatcher.enabled():
                     print(json.dumps(ev, ensure_ascii=False))
                 else:
                     batch.append(ev)
             if batch and (time.time() - last_flush >= args.flush_interval or len(batch) >= args.batch_size):
-                post_events(ingest_url, args.token, batch)
+                dispatcher.flush(batch)
                 batch = []
                 last_flush = time.time()
 
-        if batch and ingest_url and not args.dry_run:
-            post_events(ingest_url, args.token, batch)
+        dispatcher.flush(batch)
         print(f"[info] replay #{loop_count} concluido ({n} pacotes lidos de {args.file})")
         if not args.loop:
             break
@@ -235,24 +335,35 @@ def main() -> int:
     parser.add_argument("--flush-interval", type=float, default=2.0, help="segundos entre envios ao Dynatrace")
     parser.add_argument("--endpoint", default=os.environ.get("DT_ENV_URL"))
     parser.add_argument("--token", default=os.environ.get("DT_API_TOKEN"))
+    parser.add_argument(
+        "--sink", choices=["bizevents", "otlp", "both"],
+        default=os.environ.get("RACING_SINK", "bizevents"),
+        help="destino dos eventos: bizevents (API direta), otlp (OTel Collector local) ou both (default: bizevents)",
+    )
+    parser.add_argument(
+        "--otlp-endpoint", default=os.environ.get("RACING_OTLP_ENDPOINT", DEFAULT_OTLP_ENDPOINT),
+        help=f"[otlp] receiver do OTel Collector local (default: {DEFAULT_OTLP_ENDPOINT})",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     if args.source == "replay" and not args.file:
         print("erro: --source replay exige --file captura.txt", file=sys.stderr)
         return 1
-    if not args.dry_run and not args.endpoint:
+    needs_dynatrace_api = args.sink in ("bizevents", "both") and not args.dry_run
+    if needs_dynatrace_api and not args.endpoint:
         print("erro: informe --endpoint ou defina DT_ENV_URL", file=sys.stderr)
         return 1
-    if not args.dry_run and not args.token:
+    if needs_dynatrace_api and not args.token:
         print("erro: informe --token ou defina DT_API_TOKEN (escopo bizevents.ingest)", file=sys.stderr)
         return 1
 
     ingest_url = args.endpoint.rstrip("/") + "/api/v2/bizevents/ingest" if args.endpoint else None
+    dispatcher = Dispatcher(args, ingest_url)
 
     if args.source == "udp":
-        return run_udp(args, ingest_url)
-    return run_replay(args, ingest_url)
+        return run_udp(args, dispatcher)
+    return run_replay(args, dispatcher)
 
 
 if __name__ == "__main__":
