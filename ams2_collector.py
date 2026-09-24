@@ -38,6 +38,7 @@ Uso:
 
 import argparse
 import json
+import re
 import os
 import socket
 import sys
@@ -64,9 +65,33 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# O piloto digita o proprio nome no perfil do AMS2. Combinando "Nome [Empresa]",
+# o rig nao precisa ser reconfigurado a cada cliente que senta na cadeira.
+# Aceita "[Nome][Empresa]", "Nome [Empresa]" e "Nome" (sem empresa).
+NOME_EMPRESA = re.compile(r"^\s*\[?\s*([^\[\]]+?)\s*\]?\s*\[\s*([^\[\]]+?)\s*\]\s*$")
+
+
+def split_driver_company(bruto: Optional[str]):
+    """Separa nome do piloto e empresa. Devolve (nome, empresa|None).
+
+    Feito aqui e nao no OpenPipeline de proposito: vale igual nos dois caminhos
+    de ingestao (business events e logs OTLP), nao depende de configuracao no
+    tenant e da' para testar. O texto original segue em driver_name_raw, entao
+    uma regra de OpenPipeline ainda pode reprocessar depois se preferirem.
+    """
+    if not bruto or not bruto.strip():
+        return None, None
+    casado = NOME_EMPRESA.match(bruto)
+    if casado:
+        return casado.group(1).strip(), casado.group(2).strip()
+    return bruto.strip().strip("[]").strip() or None, None
+
+
 def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState,
                  telemetry: dict, timings: Optional[dict], source: str,
-                 sample_seq: int = 0) -> dict:
+                 sample_seq: int = 0, driver_name: Optional[str] = None,
+                 company_name: Optional[str] = None) -> dict:
+    nome_do_jogo, empresa_do_jogo = split_driver_company(state.driver_name)
     return {
         "timestamp": iso_now(),
         # Identidade unica da amostra. Quando bizevents e OTLP rodam juntos o mesmo
@@ -78,7 +103,14 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "session.id": session_id,
         "rig.id": rig_id,
         "rig.name": rig_name,
-        "driver_name": state.driver_name,
+        # O piloto e a empresa saem de "Nome [Empresa]" digitado no perfil do AMS2.
+        # As opcoes --driver-name / --company-name vencem, para quando o rig ja'
+        # sabe quem esta na cadeira.
+        "driver_name": driver_name or nome_do_jogo,
+        # O app monta o podio "Disputa entre empresas" por este campo. O protocolo
+        # do AMS2 nao tem nada equivalente: ou vem no nome, ou e' informado aqui.
+        "company_name": company_name or empresa_do_jogo,
+        "driver_name_raw": state.driver_name,
         "car_name": state.car_name,
         "acceleration_g": telemetry["acceleration_g"],
         "speed_kmh": telemetry["speed_kmh"],
@@ -171,10 +203,13 @@ def post_otlp(url: str, events: list, timeout: float = 10.0) -> None:
 
 
 class Collector:
-    def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str):
+    def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str,
+                 driver_name: Optional[str] = None, company_name: Optional[str] = None):
         self.state = SessionState()
         self.rig_id = rig_id
         self.rig_name = rig_name
+        self.driver_name = driver_name
+        self.company_name = company_name
         self.session_id = session_id
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
@@ -203,6 +238,7 @@ class Collector:
             return build_event(
                 self.rig_id, self.rig_name, self.session_id, self.state,
                 telemetry, self._last_timings, self.source_label, self._sample_seq,
+                self.driver_name, self.company_name,
             )
         return None
 
@@ -239,7 +275,8 @@ class Dispatcher:
 
 
 def run_udp(args, dispatcher: "Dispatcher") -> int:
-    collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real")
+    collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
+                          args.driver_name, args.company_name)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
     print(f"[info] escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
@@ -272,7 +309,8 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
 
 
 def run_replay(args, dispatcher: "Dispatcher") -> int:
-    collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real")
+    collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real",
+                          args.driver_name, args.company_name)
     print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
@@ -333,6 +371,14 @@ def main() -> int:
     parser.add_argument("--speed", type=float, default=1.0, help="[replay] multiplicador de velocidade (0 = o mais rapido possivel, sem pausas)")
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--flush-interval", type=float, default=2.0, help="segundos entre envios ao Dynatrace")
+    parser.add_argument(
+        "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
+        help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",
+    )
+    parser.add_argument(
+        "--company-name", default=os.environ.get("RACING_COMPANY") or None,
+        help="empresa do piloto; alimenta o podio 'Disputa entre empresas' do app",
+    )
     parser.add_argument("--endpoint", default=os.environ.get("DT_ENV_URL"))
     parser.add_argument("--token", default=os.environ.get("DT_API_TOKEN"))
     parser.add_argument(

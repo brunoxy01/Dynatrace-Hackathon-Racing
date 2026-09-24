@@ -89,12 +89,45 @@ export const Dashboard = () => {
     return [...map.values()].sort((a,b) => a.best! - b.best!).slice(0,3);
   }, [drivers]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
+  // Ticker próprio: o "sem telemetria há Ns" precisa subir sozinho entre as
+  // reexecuções da consulta, que só acontecem a cada 30s.
+  const [tick, setTick] = useState(0);
+  const pulsing = mode === 'live' && timeframe.to === 'now()';
+  useEffect(() => {
+    if (!pulsing) return;
+    const timer = window.setInterval(() => setTick(v => v + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [pulsing]);
+  // Pulso de tempo real. Calculado a cada render de propósito: depende de
+  // Date.now(), então memorizar por `tick` só esconderia a dependência real.
+  // São 10.000 iterações no pior caso, abaixo de um milissegundo.
+  const pulse = ((): {fresh:number; rigs:number; silentFor:number|null} | null => {
+    void tick;
+    if (!pulsing) return null;
+    const now = Date.now(), window = 60000;
+    let newest = 0, fresh = 0;
+    const rigs = new Set<string>();
+    for (const e of events) {
+      const at = Date.parse(e.timestamp);
+      if (at > newest) newest = at;
+      if (now - at <= window) { fresh++; rigs.add(e['rig.id']); }
+    }
+    return { fresh, rigs: rigs.size, silentFor: newest ? Math.round((now - newest) / 1000) : null };
+  })();
   const changeMode = (value: string | null) => { if (value) { setMode(value); setQueryTime(Date.now()); setPlaying(false); setSelected('all'); if (value === 'capture') setCursor(0); } };
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
       <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div></div>
+      <div className="status-group">
       <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real · 19 set 2026' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+      {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
+        <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
+        {pulse.fresh
+          ? `Ao vivo · ${number(pulse.fresh)} amostras/min · ${pulse.rigs} ${pulse.rigs === 1 ? 'simulador' : 'simuladores'}`
+          : pulse.silentFor === null ? 'Aguardando telemetria ao vivo' : `Sem telemetria há ${number(pulse.silentFor)}s`}
+      </div>}
+      </div>
     </header>
     <section className="toolbar" aria-label="Controles da corrida">
       <Flex alignItems="center" gap={12} flexWrap="wrap">

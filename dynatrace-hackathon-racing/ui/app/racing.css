@@ -12,3 +12,9 @@
 .metric-legend:hover,.metric-legend.selected{opacity:1}.metric-legend:focus-visible{outline:2px solid #af8bed;outline-offset:5px;border-radius:2px}
 .legend-dot{width:6px;height:6px;border-radius:50%;display:inline-block}.legend-dot.speed_kmh{background:#5daeff}.legend-dot.brake_pct{background:#b596f0}.legend-dot.acceleration_g{background:#66d5ae}
 .reference-label{fill:currentColor;opacity:.6;font-size:8px;letter-spacing:.5px}.car-marker{transition:transform var(--dt-timings-base-quick,250ms) linear}
+
+/* Pulso de telemetria ao vivo, ao lado do status da consulta. */
+.app-heading .status{white-space:nowrap}
+.status-dot.beating{animation:beating 1.6s ease-out infinite}
+@keyframes beating{0%{box-shadow:0 0 0 0 #2eb77d55}70%{box-shadow:0 0 0 7px #2eb77d00}100%{box-shadow:0 0 0 0 #2eb77d00}}
+.status-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px}

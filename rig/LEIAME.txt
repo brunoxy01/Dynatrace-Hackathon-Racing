@@ -1,0 +1,91 @@
+===========================================================
+ HACKATHON RACING - telemetria do simulador para o Dynatrace
+===========================================================
+
+O que tem nesta pasta
+---------------------
+  HackathonRacing.exe            o programa (duplo clique)
+  dynatrace-otel-collector.exe   subiu junto, nao precisa mexer
+  otelcol-racing.yaml            config do collector, nao precisa mexer
+  racing.ini                     >>> O UNICO ARQUIVO QUE VOCE EDITA <<<
+  captura.txt                    volta gravada, usada no modo de teste
+
+
+PASSO 1 - preencher o racing.ini
+--------------------------------
+Abra o racing.ini no Bloco de Notas e preencha:
+
+  rig_id        = rig-01        <- use rig-01, rig-02 ou rig-03.
+                                   PRECISA SER DIFERENTE EM CADA PC.
+  dt_env_url    = https://SEU_AMBIENTE.live.dynatrace.com
+  dt_api_token  = dt0c01....
+
+A URL e o token vem com o Bruno. Sem eles nada chega no Dynatrace.
+NAO mande o racing.ini preenchido por e-mail ou WhatsApp: ele tem o token.
+
+
+PASSO 2 - testar SEM o jogo (recomendado antes de tudo)
+-------------------------------------------------------
+Abra o Prompt de Comando nesta pasta e rode:
+
+  HackathonRacing.exe --teste
+
+Isso reproduz a volta gravada como se fosse o jogo. Se aparecer
+"amostras enviadas" subindo, a cadeia inteira esta funcionando e os
+dados ja' estao indo para o Dynatrace. Ctrl+C para parar.
+
+Dica: para nao poluir os dados de verdade, avise o Bruno que voce esta
+testando, ou use rig_id = teste-01 nessa hora.
+
+
+PASSO 3 - configurar o Automobilista 2
+--------------------------------------
+No jogo: Options > System
+
+  UDP Protocol Version = Project CARS 2
+  UDP Frequency        = 1
+
+Sem isso o jogo nao transmite nada e a tela fica parada em zero.
+
+
+PASSO 4 - o nome do piloto
+--------------------------
+No perfil do AMS2, escreva o nome ASSIM:
+
+  Nome Sobrenome [Empresa]
+
+Exemplos:
+  Bruno Lima [Dynatrace]
+  Joao Pereira [Bradesco]
+
+O programa separa sozinho o nome da empresa, e a empresa e' o que monta
+o podio "Disputa entre empresas" no painel. Sem os colchetes o piloto
+aparece, mas sem empresa.
+
+
+PASSO 5 - no dia
+----------------
+1. Duplo clique no HackathonRacing.exe
+2. Deixe a janela preta ABERTA o tempo todo
+3. Abra o jogo e corra
+
+A janela mostra "N amostras enviadas" subindo. E' isso que voce quer ver.
+
+
+Se der problema
+---------------
+"preencha dt_env_url e dt_api_token"
+    o racing.ini nao foi editado, ou foi salvo no lugar errado
+
+"a porta UDP 5606 ja' esta em uso"
+    o programa ja' esta aberto em outra janela. Feche a outra.
+
+"o collector nao subiu"
+    token errado ou sem permissao. Fale com o Bruno.
+
+O contador nao sobe com o jogo aberto
+    o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista
+
+A internet caiu no meio
+    nao tem problema: o collector guarda na pasta fila-otel e reenvia
+    sozinho quando a conexao voltar

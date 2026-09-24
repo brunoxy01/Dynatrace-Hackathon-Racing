@@ -1,0 +1,88 @@
+name: Pacote do rig (Windows)
+
+# Gera o pacote de duplo clique para os simuladores: um .exe unico com o
+# Python embutido, o OTel Collector oficial da Dynatrace e a config pronta.
+# Roda em windows-latest porque o PyInstaller nao faz cross-compile.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  COLLECTOR_VERSION: '0.57.0'
+
+jobs:
+  construir:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar PyInstaller
+        run: pip install pyinstaller==6.11.1
+
+      - name: Testes
+        run: python -m unittest test_collector test_cars2_telemetry test_protocol test_replay
+
+      - name: Construir o executavel
+        run: >
+          pyinstaller --onefile --name HackathonRacing
+          --paths .
+          --hidden-import ams2_collector
+          --hidden-import ams2_protocol
+          --hidden-import cars2_telemetry_generator
+          rig/hackathon_racing.py
+
+      - name: Baixar o OTel Collector da Dynatrace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:COLLECTOR_VERSION
+          $base = "https://github.com/Dynatrace/dynatrace-otel-collector/releases/download/v$v"
+          Invoke-WebRequest "$base/dynatrace-otel-collector_${v}_Windows_x86_64.zip" -OutFile collector.zip
+          Invoke-WebRequest "$base/checksums.txt" -OutFile checksums.txt
+          $esperado = (Select-String -Path checksums.txt -Pattern "Windows_x86_64.zip").Line.Split()[0]
+          $obtido = (Get-FileHash collector.zip -Algorithm SHA256).Hash.ToLower()
+          if ($esperado -ne $obtido) { throw "checksum do collector nao confere: $obtido != $esperado" }
+          Write-Host "checksum do collector conferido"
+          Expand-Archive collector.zip -DestinationPath collector-tmp -Force
+
+      - name: Montar o pacote
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path pacote | Out-Null
+          Copy-Item dist/HackathonRacing.exe pacote/
+          Copy-Item (Get-ChildItem -Recurse collector-tmp -Filter dynatrace-otel-collector.exe | Select-Object -First 1).FullName pacote/
+          Copy-Item otel/otelcol-racing.yaml pacote/
+          Copy-Item rig/LEIAME.txt pacote/
+          Copy-Item captura.txt pacote/          # habilita o modo --teste sem o jogo
+          @"
+          [rig]
+          rig_id = rig-01
+          rig_name = Simulador 1
+          ams2_port = 5606
+          sink = both
+          dt_env_url = https://SEU_AMBIENTE.live.dynatrace.com
+          dt_api_token = COLE_O_TOKEN_AQUI
+          "@ | Set-Content -Encoding UTF8 pacote/racing.ini
+          Compress-Archive -Path pacote/* -DestinationPath HackathonRacing-rig-windows.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HackathonRacing-rig-windows
+          path: HackathonRacing-rig-windows.zip
+          retention-days: 30
+
+      - name: Anexar na release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: HackathonRacing-rig-windows.zip

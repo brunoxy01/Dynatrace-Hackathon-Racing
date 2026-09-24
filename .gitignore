@@ -19,3 +19,6 @@ fila-otel/
 otel/fila-otel/
 otel/recebido.jsonl
 
+
+# Credenciais locais de ensaio
+.env.local
