@@ -22,3 +22,6 @@ otel/recebido.jsonl
 
 # Credenciais locais de ensaio
 .env.local
+
+# Binario do collector para ensaio local (macOS); nao versionar
+/dynatrace-otel-collector
