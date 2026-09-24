@@ -107,10 +107,10 @@ def apply_telemetry_variations(payload: bytes, variations: TelemetryVariations) 
 
     gear_num_gears = rewritten[45]
     gear = gear_num_gears & 0x0F
-    if gear != 0x0F:
+    # 0x0F e' a re; 0 e' o neutro; as marchas a frente validas vao de 1 ate num_gears.
+    if variations.gear_pct != 0.0 and gear != 0x0F:
         num_gears = gear_num_gears >> 4
-        max_gear = max(0, num_gears - 1)
-        varied_gear = max(0, min(max_gear, round(_scaled(gear, variations.gear_pct))))
+        varied_gear = max(0, min(num_gears, round(_scaled(gear, variations.gear_pct))))
         rewritten[45] = (gear_num_gears & 0xF0) | varied_gear
 
     for offset in (100, 104, 108):

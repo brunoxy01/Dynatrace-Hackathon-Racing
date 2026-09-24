@@ -1,0 +1,7 @@
+# v0.3.3 — Porsche reposicionado e correções do gerador
+
+- Porsche 911 movido para o canto inferior esquerdo do painel do mapa. A `viewBox` do SVG foi ampliada à esquerda e ancorada com `preserveAspectRatio="xMinYMid"`, abrindo espaço real para o carro sem mover nem redimensionar o traçado da pista. Verificado em 900, 1500 e 1900 px de largura: o carro fica sempre dentro do painel, sem corte.
+- `npm run lint` volta a funcionar. A pasta duplicada `dynatrace-hackathon-racing/dynatrace-hackathon-racing/` era o scaffold original intocado (versão 0.0.0) com um `node_modules` corrompido, e fazia o ESLint abortar com `Cannot find package .../semver/index.js` antes de analisar qualquer arquivo do projeto. Removida.
+- Gerador de telemetria: corrigida a corrupção da marcha em `cars2_telemetry_generator.py`. As marchas válidas vão de 1 até `num_gears` (0 = neutro, 0xF = ré), mas o limite estava em `num_gears - 1`, então a marcha mais alta do carro nunca era gerada — num carro de 8 marchas, a 8ª virava 7ª. Além disso a marcha era reescrita mesmo com `--gear-pct 0`, rebaixando o valor em execuções que só variavam velocidade ou freio. A captura atual não expõe o problema porque o piloto não passou da 7ª.
+
+Validação: `npm run lint`, `npm test`, `npm run build` e os testes Python (`python3 -m unittest test_cars2_telemetry test_protocol test_replay`). O pacote de instalação está anexado à release.

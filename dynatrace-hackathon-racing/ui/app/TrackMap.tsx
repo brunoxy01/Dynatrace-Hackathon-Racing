@@ -27,14 +27,16 @@ export function TrackMap({events}: {events: Telemetry[]}) {
     for (const e of events) if (finite(e.pos_x) && finite(e.pos_y)) { const key=driverKey(e); if (!latest.has(key) || Date.parse(e.timestamp) > Date.parse(latest.get(key)!.timestamp)) latest.set(key,e); }
     return [...latest.values()];
   }, [events]);
-  return <svg className="track-map" viewBox="0 0 680 450" role="img" aria-label="Mapa de Interlagos com velocidade em azul, frenagem em vermelho e aceleração em verde">
+  // The viewBox is extended to the left (and anchored with xMin) to open room for the car
+  // outside the track outline; the outline itself keeps its original place and scale.
+  return <svg className="track-map" viewBox="-180 0 860 450" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Mapa de Interlagos com velocidade em azul, frenagem em vermelho e aceleração em verde">
     <defs>{points.map((p,i) => <linearGradient key={i} id={`${id}-heat-${i}`} gradientUnits="userSpaceOnUse" x1={p.x} y1={p.y} x2={at(i+1).x} y2={at(i+1).y}><stop stopColor={colors[i] ?? 'transparent'}/><stop offset="1" stopColor={colors[(i+1)%colors.length] ?? colors[i] ?? 'transparent'}/></linearGradient>)}</defs>
     <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".12" strokeWidth="17" strokeLinecap="round"/>
     <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".75" strokeWidth="6" strokeLinecap="round"/>
     <g fill="none" strokeWidth="5" strokeLinecap="round">{segments.map((d,i) => colors[i] !== null && colors[(i+1)%colors.length] !== null ? <path key={i} d={d} stroke={`url(#${id}-heat-${i})`}/> : null)}</g>
     {referencePoints.map((index,i) => <g key={index}><circle cx={points[index].x} cy={points[index].y} r="4" fill="var(--dt-colors-background-base-default, #202132)" stroke="#e4d6fc" strokeWidth="1.5"/><text x={points[index].x+10} y={points[index].y-10} className="reference-label">{String(i+1).padStart(2,'0')}</text><title>Ponto de referência {i+1} · cores combinadas dos eventos recebidos</title></g>)}
     <g transform={`translate(${start.x},${start.y})`}><path d="M-10 -8 h20 v16 h-20z" fill="white"/><path d="M-10 -8h5v8h-5z M0 -8h5v8h-5z M-5 0h5v8h-5z M5 0h5v8h-5z" fill="#20262e"/><text x="-16" y="-19" className="map-label">LARGADA</text></g>
-    <g className="event-car" transform="translate(-34 0)" aria-label="Porsche 911">
+    <g className="event-car" transform="translate(-184 0)" aria-label="Porsche 911">
       <image href="./assets/porsche-911.png" x="4" y="346" width="146" height="82" preserveAspectRatio="xMidYMid meet"/>
       <text x="77" y="434" textAnchor="middle" fill="currentColor" fontSize="10" fontWeight="600">Porsche 911</text>
     </g>
