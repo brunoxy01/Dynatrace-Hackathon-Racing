@@ -4,6 +4,8 @@ python replay_server.py --port 3001 --speed 1
 Starts idle; use 'Iniciar simulação' in the app to emit the recorded timed lap.
 Only listens on loopback. The original 20 Hz timestamps determine playback timing.
 """
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import argparse
 import json
 import threading

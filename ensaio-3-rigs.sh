@@ -56,7 +56,10 @@ else
   echo "=== ENSAIO REAL - enviando para ${DT_ENV_URL} ==="
   CONFIG_OTEL="otel/otelcol-racing.yaml"
   SINK="both"
-  EXTRA=(--endpoint "$DT_ENV_URL" --token "$DT_API_TOKEN")
+  # Nada de --token aqui: argumento de linha de comando aparece no `ps` para
+  # qualquer usuario da maquina. O coletor le DT_ENV_URL/DT_API_TOKEN do ambiente.
+  export DT_ENV_URL DT_API_TOKEN
+  EXTRA=()
 fi
 
 # ---- 1. collector (um so', os tres rigs mandam para ele) ----

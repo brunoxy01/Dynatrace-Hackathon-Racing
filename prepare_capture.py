@@ -3,6 +3,8 @@
 Run from repository root: python prepare_capture.py
 No network requests or ingestion. Recorded timestamps are preserved.
 """
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import json
 from pathlib import Path
 from ams2_collector import Collector

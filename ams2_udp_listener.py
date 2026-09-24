@@ -36,6 +36,8 @@ Uso so' para inspecionar no terminal (sem gravar nada):
   python3 ams2_udp_listener.py --host 0.0.0.0 --port 5606
 """
 
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import argparse
 import json
 import signal

@@ -36,6 +36,8 @@ Uso:
     python3 ams2_collector.py --source replay --file captura.txt --rig-id rig-01 --loop --speed 4
 """
 
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import argparse
 import json
 import re

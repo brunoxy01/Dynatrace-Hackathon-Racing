@@ -14,6 +14,8 @@ Modo de ensaio (`--teste`): sobe tambem o gerador, que reenvia a captura real
 por UDP fazendo o papel do jogo. Serve para validar a cadeia inteira sem o AMS2.
 """
 
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import argparse
 import configparser
 import os

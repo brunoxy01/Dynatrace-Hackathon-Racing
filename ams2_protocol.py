@@ -35,6 +35,8 @@ packetType:
     8 = Vehicle/class names       - quando muda (nome do carro)
 """
 
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import struct
 from dataclasses import dataclass, field
 from typing import Optional

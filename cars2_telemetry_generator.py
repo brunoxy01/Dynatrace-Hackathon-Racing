@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Gera trafego UDP de CARS2/AMS2 a partir de uma captura HEX real."""
 
+from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
+
 import argparse
 import math
 import socket
