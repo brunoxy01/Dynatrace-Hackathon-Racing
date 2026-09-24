@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { parseTimeAsTimeValue } from '@dynatrace-sdk/units';
 import { useDql } from '@dynatrace-sdk/react-hooks';
 import { Button } from '@dynatrace/strato-components/buttons';
@@ -64,6 +64,19 @@ const columns: DataTableColumnDef<Driver>[] = [
   { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position', alignment: 'right', minWidth: 145 },
 ];
 
+// A janela deslizante recalcula o timeframe absoluto a cada 30s. Para o cache do
+// useDql isso é uma query NOVA, então `data` volta a ser undefined até a resposta
+// chegar — e o painel inteiro pisca (mapa cinza, KPIs em "—", pódio vazio) a cada
+// ciclo. Aqui seguramos o último resultado enquanto o próximo não chega. Uma
+// resposta vazia de verdade não é undefined, então períodos sem dados continuam
+// zerando o painel corretamente. Trocar de período ou de modo limpa na hora.
+function useUltimoResultado<T>(atual: T | undefined, chave: string): T | undefined {
+  const guardado = useRef<{chave: string; valor: T | undefined}>({chave, valor: undefined});
+  if (guardado.current.chave !== chave) guardado.current = {chave, valor: undefined};
+  if (atual !== undefined) guardado.current.valor = atual;
+  return guardado.current.valor;
+}
+
 function Stat({label, value, unit}: {label: string; value: string; unit?: string}) {
   return <div className="stat"><span>{label}</span><strong>{value}<small>{unit}</small></strong></div>;
 }
@@ -89,10 +102,15 @@ export const Dashboard = () => {
     return () => window.clearInterval(timer);
   }, [playing, mode]);
   useEffect(() => { if (cursor >= capture.length) setPlaying(false); }, [cursor]);
-  const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : mergeTelemetry(parseEvents(live.data?.records), parseEvents(liveOtel.data?.records)), [mode, cursor, live.data, liveOtel.data, stream.events]);
+  const janela = `${mode}|${timeframe.from}|${timeframe.to}`;
+  const liveData = useUltimoResultado(live.data, janela);
+  const liveOtelData = useUltimoResultado(liveOtel.data, janela);
+  const liveLapsData = useUltimoResultado(liveLaps.data, janela);
+  const liveLapsOtelData = useUltimoResultado(liveLapsOtel.data, janela);
+  const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records)), [mode, cursor, liveData, liveOtelData, stream.events]);
   const lapResults = useMemo(() => mode === 'live'
-    ? mergeTelemetry(parseEvents(liveLaps.data?.records), parseEvents(liveLapsOtel.data?.records))
-    : [], [mode, liveLaps.data, liveLapsOtel.data]);
+    ? mergeTelemetry(parseEvents(liveLapsData?.records), parseEvents(liveLapsOtelData?.records))
+    : [], [mode, liveLapsData, liveLapsOtelData]);
   const drivers = useMemo(() => applyLapResults(summarize(events), lapResults), [events, lapResults]);
   const filtered = useMemo(() => selected === 'all' ? events : events.filter(e => driverKey(e) === selected), [events, selected]);
   const focus = selected === 'all' ? drivers[0] : drivers.find(d => d.key === selected);
