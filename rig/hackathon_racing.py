@@ -46,6 +46,12 @@ COLLECTOR_NAMES = ("dynatrace-otel-collector.exe", "dynatrace-otel-collector")
 PIDFILE = "collector.pid"
 
 
+def pasta_estado() -> Path:
+    """Estado transitorio (pidfile, fila) fica junto do collector."""
+    motor = HERE / "motor"
+    return motor if motor.is_dir() else HERE
+
+
 def limpar_collector_orfao() -> None:
     """Derruba um collector que tenha sobrado de uma execucao anterior.
 
@@ -54,7 +60,7 @@ def limpar_collector_orfao() -> None:
     o collector vivo segurando a porta 4318 - e o proximo duplo clique falharia.
     Guardamos o PID em disco e limpamos na entrada, entao o rig sempre sobe.
     """
-    arquivo = HERE / PIDFILE
+    arquivo = pasta_estado() / PIDFILE
     if not arquivo.exists():
         return
     try:
@@ -117,16 +123,24 @@ def carregar_config(caminho: Path) -> dict:
 
 
 def achar_collector() -> "Path | None":
-    for nome in COLLECTOR_NAMES:
-        candidato = HERE / nome
-        if candidato.exists():
-            return candidato
+    """Procura em motor/ primeiro: no pacote o collector fica escondido ali para
+    o operador ver um unico .exe e nao ter duvida sobre qual abrir."""
+    for pasta in (HERE / "motor", HERE):
+        for nome in COLLECTOR_NAMES:
+            candidato = pasta / nome
+            if candidato.exists():
+                return candidato
     return None
 
 
 def achar_config_otel() -> "Path | None":
-    """Aceita o pacote plano (tudo junto ao executavel) e o repo clonado."""
-    for candidato in (HERE / "otelcol-racing.yaml", HERE.parent / "otel" / "otelcol-racing.yaml"):
+    """Aceita o pacote (motor/), o layout plano e o repo clonado."""
+    candidatos = (
+        HERE / "motor" / "otelcol-racing.yaml",
+        HERE / "otelcol-racing.yaml",
+        HERE.parent / "otel" / "otelcol-racing.yaml",
+    )
+    for candidato in candidatos:
         if candidato.exists():
             return candidato
     return None
@@ -174,11 +188,11 @@ def subir_collector(config: dict, config_yaml: Path) -> "subprocess.Popen | None
     print(f"[..] subindo o OTel Collector ({binario.name})")
     processo = subprocess.Popen(
         [str(binario), "--config", str(config_yaml)],
-        cwd=str(HERE), env=ambiente,
+        cwd=str(binario.parent), env=ambiente,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     try:
-        (HERE / PIDFILE).write_text(str(processo.pid), encoding="utf-8")
+        (pasta_estado() / PIDFILE).write_text(str(processo.pid), encoding="utf-8")
     except OSError:
         pass
     if not esperar_porta("http://127.0.0.1:4318/v1/logs"):
@@ -291,7 +305,7 @@ def main() -> int:
                 collector.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 collector.kill()
-            (HERE / PIDFILE).unlink(missing_ok=True)
+            (pasta_estado() / PIDFILE).unlink(missing_ok=True)
             print("[ok] tudo encerrado")
 
 

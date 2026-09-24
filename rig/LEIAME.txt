@@ -4,11 +4,14 @@
 
 O que tem nesta pasta
 ---------------------
-  HackathonRacing.exe            o programa (duplo clique)
-  dynatrace-otel-collector.exe   subiu junto, nao precisa mexer
-  otelcol-racing.yaml            config do collector, nao precisa mexer
-  racing.ini                     >>> O UNICO ARQUIVO QUE VOCE EDITA <<<
-  captura.txt                    volta gravada, usada no modo de teste
+  HackathonRacing.exe   >>> O UNICO PROGRAMA QUE VOCE ABRE <<<
+  racing.ini            >>> O UNICO ARQUIVO QUE VOCE EDITA <<<
+  captura.txt           volta gravada, usada no modo de teste
+  motor\               pecas internas. NAO ABRA NADA AQUI DENTRO.
+
+O HackathonRacing.exe liga sozinho o que esta em motor\ (o OTel Collector) e
+desliga junto quando voce fecha. Voce nunca precisa abrir aquilo na mao - se
+abrir, os dois vao brigar pela mesma porta e o programa principal nao sobe.
 
 
 PASSO 1 - preencher o racing.ini

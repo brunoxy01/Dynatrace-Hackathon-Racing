@@ -58,12 +58,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path pacote | Out-Null
+          New-Item -ItemType Directory -Force -Path pacote/motor | Out-Null
           Copy-Item dist/HackathonRacing.exe pacote/
-          Copy-Item (Get-ChildItem -Recurse collector-tmp -Filter dynatrace-otel-collector.exe | Select-Object -First 1).FullName pacote/
-          Copy-Item otel/otelcol-racing.yaml pacote/
           Copy-Item rig/LEIAME.txt pacote/
           Copy-Item captura.txt pacote/          # habilita o modo --teste sem o jogo
+          # O collector vai para motor/: na pasta principal fica um unico .exe,
+          # para o operador do rig nao ter duvida sobre qual abrir.
+          Copy-Item (Get-ChildItem -Recurse collector-tmp -Filter dynatrace-otel-collector.exe | Select-Object -First 1).FullName pacote/motor/
+          Copy-Item otel/otelcol-racing.yaml pacote/motor/
+          Set-Content -Encoding UTF8 pacote/motor/LEIAME.txt "Nao abra nada aqui. O HackathonRacing.exe da pasta de cima sobe estes arquivos sozinho." 
           @"
           [rig]
           rig_id = rig-01
