@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -67,4 +67,50 @@ test('samples without sample.id never collapse into each other', () => {
   // uma fonte vazia nao interfere na outra
   assert.equal(mergeTelemetry([a,b],[]).length, 2);
   assert.equal(mergeTelemetry([],[a,b]).length, 2);
+});
+
+test('completed laps come from their own query, not from the recent-samples window', () => {
+  // A janela de 10.000 amostras cobre menos de uma volta com 3 rigs, então a
+  // transição de volta quase nunca cai nela e o summarize sozinho dá best=null.
+  const semTransicao = summarize([{...sample, lap_number:2, lap_time_s:30, last_lap_s:104.015, lap_invalidated:false}]);
+  assert.equal(semTransicao[0].best, null);
+
+  const volta = {...sample, last_lap_s:104.015, lap_invalidated:false};
+  const comResultado = applyLapResults(semTransicao, [volta]);
+  assert.equal(comResultado[0].best, 104.015);
+  assert.equal(comResultado[0].bestSource, 'completed');
+});
+
+test('lap results keep the fastest time and never worsen an existing best', () => {
+  const base = summarize([{...sample, best_lap_s:99.5}]);
+  assert.equal(base[0].best, 99.5);
+  // um resultado mais lento não pode substituir o tempo do simulador
+  assert.equal(applyLapResults(base, [{...sample, last_lap_s:120}])[0].best, 99.5);
+  // um mais rápido, sim
+  assert.equal(applyLapResults(base, [{...sample, last_lap_s:95}])[0].best, 95);
+  // entre várias voltas, fica a melhor
+  const d = summarize([sample]);
+  assert.equal(applyLapResults(d, [{...sample,last_lap_s:110},{...sample,last_lap_s:102},{...sample,last_lap_s:107}])[0].best, 102);
+});
+
+test('lap results of one driver never leak into another', () => {
+  const dois = summarize([sample, {...sample, driver_name:'Outro', 'rig.id':'2'}]);
+  const comVolta = applyLapResults(dois, [{...sample, last_lap_s:101}]);
+  const porNome = Object.fromEntries(comVolta.map(d => [d.driver_name, d.best]));
+  assert.equal(porNome['Pilot'], 101);
+  assert.equal(porNome['Outro'], null);
+});
+
+test('podium ordering follows the times brought by the lap query', () => {
+  const tres = summarize([
+    {...sample, driver_name:'A', 'rig.id':'1'},
+    {...sample, driver_name:'B', 'rig.id':'2'},
+    {...sample, driver_name:'C', 'rig.id':'3'},
+  ]);
+  const ordenado = applyLapResults(tres, [
+    {...sample, driver_name:'A', 'rig.id':'1', last_lap_s:105},
+    {...sample, driver_name:'B', 'rig.id':'2', last_lap_s:99},
+    {...sample, driver_name:'C', 'rig.id':'3', last_lap_s:112},
+  ]);
+  assert.deepEqual(ordenado.map(d => d.driver_name), ['B','A','C']);
 });

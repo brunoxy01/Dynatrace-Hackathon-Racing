@@ -11,7 +11,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import captureData from './data/capture.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -28,6 +28,19 @@ const QUERY = `fetch bizevents
 | fields ${FIELDS}
 | sort timestamp desc
 | limit 10000`;
+// Voltas concluídas, agregadas no Grail em vez de recortadas pela janela de
+// 10.000 amostras. São poucos registros: só os instantes em que o simulador
+// fecha uma volta válida.
+const LAPS = (fonte: string) => `fetch ${fonte}
+| filter event.type == "racing.telemetry"
+| filter isNotNull(last_lap_s) and last_lap_s > 0
+| filter lap_invalidated == false
+| filter isNull(track_name) or track_name == "Interlagos"
+| fields timestamp, driver_name, car_name, rig.id, session.id, company_name, last_lap_s
+| sort timestamp desc
+| limit 5000`;
+const QUERY_LAPS = LAPS('bizevents');
+const QUERY_LAPS_OTEL = LAPS('logs');
 const QUERY_OTEL = `fetch logs
 | filter event.type == "racing.telemetry"
 | filter isNull(track_name) or track_name == "Interlagos"
@@ -68,6 +81,8 @@ export const Dashboard = () => {
   const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
   const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
   const liveOtel = useDql<Telemetry>({ query: QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
+  const liveLaps = useDql<Telemetry>({ query: QUERY_LAPS, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
+  const liveLapsOtel = useDql<Telemetry>({ query: QUERY_LAPS_OTEL, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
   useEffect(() => {
     if (!playing || mode !== 'capture') return;
     const timer = window.setInterval(() => setCursor(v => Math.min(capture.length, v + 20)), 250);
@@ -75,7 +90,10 @@ export const Dashboard = () => {
   }, [playing, mode]);
   useEffect(() => { if (cursor >= capture.length) setPlaying(false); }, [cursor]);
   const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : mergeTelemetry(parseEvents(live.data?.records), parseEvents(liveOtel.data?.records)), [mode, cursor, live.data, liveOtel.data, stream.events]);
-  const drivers = useMemo(() => summarize(events), [events]);
+  const lapResults = useMemo(() => mode === 'live'
+    ? mergeTelemetry(parseEvents(liveLaps.data?.records), parseEvents(liveLapsOtel.data?.records))
+    : [], [mode, liveLaps.data, liveLapsOtel.data]);
+  const drivers = useMemo(() => applyLapResults(summarize(events), lapResults), [events, lapResults]);
   const filtered = useMemo(() => selected === 'all' ? events : events.filter(e => driverKey(e) === selected), [events, selected]);
   const focus = selected === 'all' ? drivers[0] : drivers.find(d => d.key === selected);
   const best = drivers.find(d => d.best !== null);
@@ -155,7 +173,7 @@ export const Dashboard = () => {
         {playing && <progress aria-label="Progresso do replay" max={capture.length} value={cursor}/>}
       </section>
       <div className="driver-column">
-        <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="small-tag">{focus?.company_name ?? 'Empresa não informada'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>Porsche 911</p><p className="muted">Telemetria: {focus?.car_name ?? 'aguardando identificação do simulador'}</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
+        <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="small-tag">{focus?.company_name ?? 'Empresa não informada'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>Porsche 911</p><p className="muted" title={focus?.car_name ? `Carro informado pelo simulador: ${focus.car_name}` : undefined}>Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
         <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{mode === 'live' ? 'Última leitura no período' : 'Dados de demonstração'}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div></section>
       </div>
     </div>

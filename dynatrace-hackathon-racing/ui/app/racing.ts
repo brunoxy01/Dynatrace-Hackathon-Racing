@@ -61,6 +61,30 @@ export function mergeTelemetry(...sources: Telemetry[][]): Telemetry[] {
   return merged;
 }
 
+// Voltas concluídas chegam por uma consulta própria, agregada no Grail.
+// A consulta de telemetria traz só os 10.000 eventos mais recentes — a ~60
+// amostras/s por rig isso é menos de um minuto, e a transição de volta quase
+// nunca cai nessa janela. Sem isto o pódio fica vazio mesmo com voltas feitas.
+export function applyLapResults(drivers: Driver[], laps: Telemetry[]): Driver[] {
+  const best = new Map<string, number>();
+  for (const lap of laps) {
+    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0) continue;
+    const key = driverKey(lap);
+    const atual = best.get(key);
+    if (atual === undefined || lap.last_lap_s < atual) best.set(key, lap.last_lap_s);
+  }
+  if (!best.size) return drivers;
+  return drivers.map(driver => {
+    const registrada = best.get(driver.key);
+    if (registrada === undefined) return driver;
+    // O tempo informado pelo simulador continua tendo prioridade quando existe.
+    if (driver.bestSource === 'simulator' && finite(driver.best) && driver.best <= registrada) return driver;
+    return finite(driver.best) && driver.best <= registrada
+      ? driver
+      : { ...driver, best: registrada, bestSource: 'completed' as const };
+  }).sort((a,b) => (a.best ?? Infinity) - (b.best ?? Infinity) || a.driver_name!.localeCompare(b.driver_name!));
+}
+
 export function lapTime(value: number | null | undefined): string {
   if (!finite(value) || value <= 0) return '—';
   const ms = Math.round(value * 1000);
