@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -33,6 +33,21 @@ test('samples from before the name and car arrive belong to the same driver', ()
   assert.equal(result.length, 1);
   assert.equal(result[0].driver_name, 'Pilot');
   assert.equal(result[0].car_name, 'Formula');
+});
+test('the name and car learned later fill in the start of the same session', () => {
+  const warmup = {...sample, driver_name:null, car_name:null};
+  const named = {...sample, timestamp:'2026-09-19T00:00:30Z'};
+  const [first] = backfillIdentity([warmup, named]);
+  assert.equal(first.driver_name, 'Pilot');
+  assert.equal(first.car_name, 'Formula');
+  // O painel precisa do nome já na primeira amostra revelada pelo replay.
+  assert.equal(summarize(backfillIdentity([warmup, named]).slice(0,1))[0].driver_name, 'Pilot');
+});
+test('backfill never borrows a name from another session', () => {
+  const nameless = {...sample, 'rig.id':'2', driver_name:null, car_name:null};
+  const [, outro] = backfillIdentity([sample, nameless]);
+  assert.equal(outro.driver_name, null);
+  assert.equal(outro.car_name, null);
 });
 test('different rigs and different sessions stay separate drivers', () => {
   assert.equal(trails([sample, {...sample,'rig.id':'2'}]).length, 2);

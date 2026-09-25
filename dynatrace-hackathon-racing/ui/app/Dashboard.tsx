@@ -11,11 +11,22 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import captureData from './data/capture.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
-const capture = parseEvents(captureData);
+// A captura é constante: o preenchimento de identidade roda uma vez, na carga.
+const capture = backfillIdentity(parseEvents(captureData));
+// O replay não consulta o Grail, então não há período para escolher — mas a
+// gravação tem o seu, e escondê-lo fazia o modo parecer quebrado.
+const captureWindow = (() => {
+  if (!capture.length) return null;
+  const times = capture.map(e => Date.parse(e.timestamp));
+  const from = new Date(Math.min(...times)), to = new Date(Math.max(...times));
+  const seconds = Math.round((to.getTime() - from.getTime()) / 1000);
+  const hora = (d: Date) => d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
+  return `${from.toLocaleDateString('pt-BR')} · ${hora(from)}–${hora(to)} · ${Math.floor(seconds / 60)}min${String(seconds % 60).padStart(2, '0')}`;
+})();
 const isLocal = window.location.hostname === 'localhost';
 const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
 // Duas fontes independentes para a mesma telemetria: a API de business events
@@ -146,7 +157,7 @@ export const Dashboard = () => {
   const liveOtelData = useUltimoResultado(liveOtel.data, janela);
   const liveLapsData = useUltimoResultado(liveLaps.data, janela);
   const liveLapsOtelData = useUltimoResultado(liveLapsOtel.data, janela);
-  const events = useMemo(() => mode === 'stream' ? stream.events : mode === 'capture' ? capture.slice(0, cursor) : mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records)), [mode, cursor, liveData, liveOtelData, stream.events]);
+  const events = useMemo(() => mode === 'stream' ? backfillIdentity(stream.events) : mode === 'capture' ? capture.slice(0, cursor) : backfillIdentity(mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records))), [mode, cursor, liveData, liveOtelData, stream.events]);
   const lapResults = useMemo(() => mode === 'live'
     ? mergeTelemetry(parseEvents(liveLapsData?.records), parseEvents(liveLapsOtelData?.records))
     : [], [mode, liveLapsData, liveLapsOtelData]);
@@ -205,7 +216,7 @@ export const Dashboard = () => {
     <header className="app-heading">
       <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div></div>
       <div className="status-group">
-      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real · 19 set 2026' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real do Automobilista 2' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
       {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
         <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
         {pulse.fresh
@@ -217,6 +228,7 @@ export const Dashboard = () => {
     <section className="toolbar" aria-label="Controles da corrida">
       <Flex alignItems="center" gap={12} flexWrap="wrap">
         <Select aria-label="Fonte dos dados" value={mode} onChange={changeMode}><Select.Content>{isLocal && <Select.Option value="stream">Script · tempo real</Select.Option>}<Select.Option value="capture">Replay da captura</Select.Option><Select.Option value="live">Grail · histórico e ao vivo</Select.Option></Select.Content></Select>
+        {mode === 'capture' && captureWindow && <span className="small-tag" aria-label="Período da gravação">{captureWindow}</span>}
         {mode === 'live' && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');}}} />}
         <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>
         {mode === 'live' && <Select aria-label="Detalhamento da tabela" value={view} onChange={v => setView(v ?? 'ranking')}><Select.Content><Select.Option value="ranking">Classificação · Top 10</Select.Option><Select.Option value="laps">Voltas registradas</Select.Option></Select.Content></Select>}

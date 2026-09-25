@@ -127,6 +127,29 @@ export function summarize(events: Telemetry[]): Driver[] {
   return [...drivers.values()].sort((a,b) => (a.best ?? Infinity) - (b.best ?? Infinity) || a.driver_name!.localeCompare(b.driver_name!));
 }
 
+// Nome do piloto e carro chegam em pacotes UDP próprios, uns 27s depois do
+// primeiro quadro de telemetria, e vêm nulos até lá — 535 dos 7.236 quadros da
+// captura real. Como a identidade é a sessão, esses quadros pertencem a alguém
+// que o resto do bloco já identifica: preencher para trás evita que o painel
+// fique em "Aguardando piloto" no começo de toda sessão (e nos primeiros
+// segundos do replay da captura, onde o piloto é conhecido desde sempre).
+export function backfillIdentity(events: Telemetry[]): Telemetry[] {
+  const known = new Map<string, {driver_name: string | null; car_name: string | null}>();
+  for (const event of events) {
+    const entry = known.get(driverKey(event));
+    if (!entry) known.set(driverKey(event), {driver_name: event.driver_name, car_name: event.car_name});
+    else {
+      entry.driver_name ??= event.driver_name;
+      entry.car_name ??= event.car_name;
+    }
+  }
+  return events.map(event => {
+    if (event.driver_name && event.car_name) return event;
+    const entry = known.get(driverKey(event));
+    return entry ? {...event, driver_name: event.driver_name ?? entry.driver_name, car_name: event.car_name ?? entry.car_name} : event;
+  });
+}
+
 // O Grail entrega um bloco de amostras por consulta, mas elas cobrem um
 // intervalo contínuo de pista. Agrupar por piloto e percorrer o bloco em tempo
 // real faz o carro deslizar no mapa, em vez de teletransportar uma vez por
