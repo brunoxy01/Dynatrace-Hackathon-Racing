@@ -61,34 +61,37 @@ const QUERY_OTEL = `fetch logs
 const TELEMETRY_REFRESH_MS = 5000;
 const LAPS_REFRESH_MS = 30000;
 
+// sortType padrão do DataTable é 'text': sem marcar as colunas numéricas, 10
+// viria antes de 9. Onde o accessor devolve texto formatado (tempos de volta,
+// data), o sortAccessor entrega o valor cru para a ordenação.
 const columns: DataTableColumnDef<Driver>[] = [
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 105 },
   { id: 'source', header: 'Origem', accessor: row => row.source === 'demo' ? 'Simulado' : row.source === 'replay' ? 'Captura' : 'Telemetria', minWidth: 90 },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 115 },
   { id: 'car', header: 'Carro utilizado', accessor: row => row.car_name ?? 'Não informado', minWidth: 120 },
-  { id: 'best', header: 'Melhor volta', accessor: 'best', alignment: 'right', minWidth: 110, cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
-  { id: 'speed', header: 'km/h', accessor: 'speed_kmh', alignment: 'right', minWidth: 70, cell: ({rowData}) => <>{number(rowData.speed_kmh, 1)}</> },
-  { id: 'accel', header: 'Aceleração (g)', accessor: 'acceleration_g', alignment: 'right', minWidth: 120, cell: ({rowData}) => <>{number(rowData.acceleration_g, 2)}</> },
-  { id: 'gear', header: 'Marcha', accessor: 'gear', alignment: 'right', minWidth: 80 },
-  { id: 'brake', header: 'Freio (%)', accessor: 'brake_pct', alignment: 'right', minWidth: 88 },
-  { id: 'position', header: 'Posição X / Y', accessor: row => `${number(row.pos_x, 1)} / ${number(row.pos_y, 1)}`, alignment: 'right', minWidth: 125 },
-  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70 },
-  { id: 'time', header: 'Tempo atual', accessor: row => lapTime(row.lap_time_s), alignment: 'right', minWidth: 108 },
-  { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position', alignment: 'right', minWidth: 145 },
+  { id: 'best', header: 'Melhor volta', accessor: 'best', alignment: 'right', minWidth: 110, sortType: 'number', cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
+  { id: 'speed', header: 'km/h', accessor: 'speed_kmh', alignment: 'right', minWidth: 70, sortType: 'number', cell: ({rowData}) => <>{number(rowData.speed_kmh, 1)}</> },
+  { id: 'accel', header: 'Aceleração (g)', accessor: 'acceleration_g', alignment: 'right', minWidth: 120, sortType: 'number', cell: ({rowData}) => <>{number(rowData.acceleration_g, 2)}</> },
+  { id: 'gear', header: 'Marcha', accessor: 'gear', alignment: 'right', minWidth: 80, sortType: 'number' },
+  { id: 'brake', header: 'Freio (%)', accessor: 'brake_pct', alignment: 'right', minWidth: 88, sortType: 'number' },
+  { id: 'position', header: 'Posição X / Y', accessor: row => `${number(row.pos_x, 1)} / ${number(row.pos_y, 1)}`, alignment: 'right', minWidth: 125, disableSorting: true },
+  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70, sortType: 'number' },
+  { id: 'time', header: 'Tempo atual', accessor: row => lapTime(row.lap_time_s), alignment: 'right', minWidth: 108, sortType: 'number', sortAccessor: row => row.lap_time_s ?? -1 },
+  { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position', alignment: 'right', minWidth: 145, sortType: 'number' },
 ];
 
 // Uma linha por volta concluída. `lap_number` é a volta em que o carro ESTAVA
 // quando o simulador informou o tempo, então a volta que fechou é a anterior.
 const lapColumns: DataTableColumnDef<Telemetry>[] = [
-  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70, cell: ({rowData}) => <>{finite(rowData.lap_number) ? number(rowData.lap_number - 1) : '—'}</> },
-  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', alignment: 'right', minWidth: 110, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70, sortType: 'number', cell: ({rowData}) => <>{finite(rowData.lap_number) ? number(rowData.lap_number - 1) : '—'}</> },
+  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', alignment: 'right', minWidth: 110, sortType: 'number', cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 105 },
   { id: 'car', header: 'Carro utilizado', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 115 },
   // Acessor de função, não a string 'rig.id': a tabela leria o ponto como
   // caminho aninhado (row.rig.id) e a coluna sairia vazia.
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 95 },
-  { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), alignment: 'right', minWidth: 160 },
+  { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), alignment: 'right', minWidth: 160, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
 ];
 
 // A janela deslizante recalcula o timeframe absoluto a cada 30s. Para o cache do
@@ -248,7 +251,7 @@ export const Dashboard = () => {
     <section className="kpis"><div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div><div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{best ? `${best.driver_name} · ${best.bestSource === 'simulator' ? 'informada pelo simulador' : 'calculada das voltas concluídas'}` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(best?.best)}</strong><div className="kpi-line purple"/></div></section>
     {view === 'laps' && mode === 'live'
       ? <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">DRILL DOWN</span><Heading level={2}>Voltas registradas</Heading></div><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span></div><p className="muted">Todas as voltas válidas concluídas no período selecionado{selected === 'all' ? ', de todos os pilotos' : ', do piloto selecionado'}. Voltas invalidadas pelo simulador não entram. Use o seletor de período para ampliar o histórico.</p><DataTable data={laps} columns={lapColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
-      : <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth loading={mode === 'live' && liveLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>}
+      : <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth sortable loading={mode === 'live' && liveLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>}
     <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · captura e pilotos simulados identificados · sem ingestão' : mode === 'capture' ? 'Fonte: captura UDP real do Automobilista 2 · replay local, sem ingestão' : 'Fonte: Grail · racing.telemetry · período selecionado · intervalos até agora atualizam a cada 30 segundos'}</span></footer>
   </main>;
 };
