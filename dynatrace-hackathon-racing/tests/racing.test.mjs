@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, rankDrivers } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -33,6 +33,33 @@ test('samples from before the name and car arrive belong to the same driver', ()
   assert.equal(result.length, 1);
   assert.equal(result[0].driver_name, 'Pilot');
   assert.equal(result[0].car_name, 'Formula');
+});
+// As cinco linhas que apareceram na tela para DUAS voltas reais: o mesmo tempo
+// relistado a cada volta em que o carro passou, e de novo após o coletor
+// reiniciar (sessão nova).
+const registradas = [
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s2', last_lap_s:143.067, timestamp:'2026-09-25T11:11:03Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:97.400,  timestamp:'2026-09-25T11:00:57Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:143.067, timestamp:'2026-09-25T11:07:41Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:97.400,  timestamp:'2026-09-25T11:07:15Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:143.067, timestamp:'2026-09-25T11:08:59Z'},
+];
+test('a lap time relisted across laps and sessions counts once', () => {
+  const unicas = dedupeLaps(registradas);
+  assert.equal(unicas.length, 2);
+  assert.deepEqual(unicas.map(l => l.last_lap_s).sort((a,b) => a-b), [97.400, 143.067]);
+  // Fica o instante em que a volta fechou de verdade, não a relistagem tardia.
+  assert.equal(unicas.find(l => l.last_lap_s === 143.067).timestamp, '2026-09-25T11:07:41Z');
+});
+test('same lap time by different drivers or rigs stays separate', () => {
+  const outro = {...registradas[0], driver_name:'Outro'};
+  const outroRig = {...registradas[0], 'rig.id':'rig-02'};
+  assert.equal(dedupeLaps([registradas[0], outro, outroRig]).length, 3);
+});
+test('ranking takes each driver best lap, fastest first', () => {
+  const rivais = [...registradas, {...sample, 'rig.id':'rig-02', driver_name:'Ana', last_lap_s:95.1, timestamp:'2026-09-25T11:05:00Z'}];
+  const rank = rankDrivers(dedupeLaps(rivais));
+  assert.deepEqual(rank.map(d => [d.driver_name, d.last_lap_s]), [['Ana', 95.1], ['plinioaugusto01', 97.4]]);
 });
 test('the lap window ends at the close and reaches back one lap time', () => {
   // A volta fechou às 00:01:44 e durou 104,015s: a janela começa na largada.

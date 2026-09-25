@@ -166,6 +166,36 @@ export function trails(events: Telemetry[]): Telemetry[][] {
   return [...byDriver.values()];
 }
 
+// O simulador repete o mesmo `last_lap_s` em todos os quadros até fechar uma
+// volta nova — inclusive atravessando várias voltas, quando as seguintes não
+// registram tempo — e o valor ainda sobrevive ao reinício do coletor, porque
+// quem lembra é o jogo. Agrupar no Grail por sessão + tempo colapsa as
+// repetições dentro de uma sessão; aqui some a repetição ENTRE sessões do mesmo
+// piloto no mesmo simulador, que é a mesma volta física relistada. Fica a
+// ocorrência mais antiga: o instante em que a volta de fato fechou.
+export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
+  const primeira = new Map<string, Telemetry>();
+  for (const lap of laps) {
+    const key = JSON.stringify([lap['rig.id'], lap.driver_name, lap.last_lap_s]);
+    const atual = primeira.get(key);
+    if (!atual || Date.parse(lap.timestamp) < Date.parse(atual.timestamp)) primeira.set(key, lap);
+  }
+  return [...primeira.values()];
+}
+
+// Ranking de pilotos pela melhor volta do período. Sai das voltas concluídas,
+// não da telemetria: a janela de amostras cobre menos de um minuto por rig.
+export function rankDrivers(laps: Telemetry[]): Telemetry[] {
+  const melhor = new Map<string, Telemetry>();
+  for (const lap of laps) {
+    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0) continue;
+    const key = JSON.stringify([lap['rig.id'], lap.driver_name]);
+    const atual = melhor.get(key);
+    if (!atual || lap.last_lap_s < atual.last_lap_s!) melhor.set(key, lap);
+  }
+  return [...melhor.values()].sort((a,b) => a.last_lap_s! - b.last_lap_s!);
+}
+
 // Janela de tempo que contém uma volta, para buscar as amostras dela no Grail.
 // O registro da volta traz o instante em que ela FECHOU e quanto durou, então a
 // volta é o intervalo que termina ali. A margem cobre as duas pontas: o
