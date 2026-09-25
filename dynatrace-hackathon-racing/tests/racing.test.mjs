@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -12,6 +12,79 @@ test('unvisited track stays neutral and distant samples cannot create heat', () 
 test('malformed events are dropped and missing values stay null', () => {
   assert.deepEqual(parseEvents([{timestamp:'bad'}]),[]);
   assert.equal(parseEvents([{timestamp:sample.timestamp}])[0].speed_kmh,null);
+});
+test('teleport and crash frames never become the peak speed', () => {
+  assert.equal(parseEvents([{...sample,speed_kmh:579.4}])[0].speed_kmh,null);
+  assert.equal(parseEvents([{...sample,speed_kmh:-5}])[0].speed_kmh,null);
+  assert.equal(parseEvents([{...sample,speed_kmh:300.6}])[0].speed_kmh,300.6);
+  assert.equal(summarize(parseEvents([{...sample,speed_kmh:300.6},{...sample,timestamp:'2026-09-19T00:00:01Z',speed_kmh:579.4}]))[0].peak,300.6);
+});
+test('curb and crash frames never become the reported g-force', () => {
+  assert.equal(parseEvents([{...sample,acceleration_g:105.8}])[0].acceleration_g,null);
+  assert.equal(parseEvents([{...sample,acceleration_g:3.23}])[0].acceleration_g,3.23);
+});
+// O nome do piloto e o carro chegam em pacotes UDP próprios, ~27s depois do
+// primeiro quadro. Enquanto não chegam, os dois campos vêm nulos.
+test('samples from before the name and car arrive belong to the same driver', () => {
+  const warmup = {...sample, driver_name:null, car_name:null};
+  const running = {...sample, timestamp:'2026-09-19T00:00:30Z'};
+  assert.equal(trails([warmup, running]).length, 1, 'uma sessão é um carro só no mapa');
+  const result = summarize([warmup, running]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].driver_name, 'Pilot');
+  assert.equal(result[0].car_name, 'Formula');
+});
+test('different rigs and different sessions stay separate drivers', () => {
+  assert.equal(trails([sample, {...sample,'rig.id':'2'}]).length, 2);
+  assert.equal(trails([sample, {...sample,'session.id':'s2'}]).length, 2);
+});
+test('trails group by driver in time order and skip samples without a position', () => {
+  const late = {...sample,timestamp:'2026-09-19T00:00:02Z',pos_x:20};
+  const early = {...sample,timestamp:'2026-09-19T00:00:01Z',pos_x:10};
+  const other = {...sample,'rig.id':'2',pos_x:99};
+  const result = trails([late, early, {...sample,pos_x:null}, other]);
+  assert.equal(result.length,2);
+  assert.deepEqual(result[0].map(e => e.pos_x),[10,20]);
+  assert.deepEqual(result[1].map(e => e.pos_x),[99]);
+});
+test('playback picks the last sample up to the clock, never the future', () => {
+  const trail = [0,1,2,3].map(s => ({...sample,timestamp:`2026-09-19T00:00:0${s}Z`,pos_x:s}));
+  const at = s => Date.parse(`2026-09-19T00:00:0${s}Z`);
+  assert.equal(sampleAt(trail,at(2)).pos_x,2);
+  assert.equal(sampleAt(trail,at(2)+500).pos_x,2);
+  assert.equal(sampleAt(trail,at(0)-9000).pos_x,0);
+  assert.equal(sampleAt(trail,at(9)).pos_x,3);
+});
+// Constantes reais do TrackMap: passo de 50 ms, rastro alvo de 8 s.
+const STEP = 50, TRAIL = 8000;
+test('playback advances one step at a time and never runs past the newest sample', () => {
+  assert.equal(advancePlayback(1000, 0, 5000, STEP, TRAIL),1050);
+  assert.equal(advancePlayback(4980, 0, 5000, STEP, TRAIL),5000);
+  assert.equal(advancePlayback(5000, 0, 5000, STEP, TRAIL),5000);
+});
+test('playback resyncs when the clock falls outside the loaded block', () => {
+  // Aba em segundo plano: o relógio ficou 60 s para trás e precisa voltar ao rastro.
+  assert.equal(advancePlayback(40000, 0, 100000, STEP, TRAIL),92000);
+  // Troca de período para trás: o relógio está no futuro do bloco.
+  assert.equal(advancePlayback(500000, 0, 100000, STEP, TRAIL),92000);
+  // Bloco mais curto que o rastro: não dá para recuar antes da primeira amostra.
+  assert.equal(advancePlayback(999999, 95000, 100000, STEP, TRAIL),95000);
+});
+test('playback keeps up with a 5s refresh instead of drifting or stalling', () => {
+  // Simula o regime real: consulta a cada 5 s, animação a 20 quadros por segundo.
+  let newest = 100000, clock = newest, stalled = 0, resyncs = 0;
+  for (let cycle = 0; cycle < 40; cycle++) {
+    newest += 5000;
+    for (let frame = 0; frame < 5000 / STEP; frame++) {
+      const next = advancePlayback(clock, 0, newest, STEP, TRAIL);
+      if (next === clock) stalled++;
+      if (next < clock) resyncs++;
+      clock = next;
+    }
+  }
+  assert.equal(stalled,0,'o carro nunca deve congelar entre consultas');
+  assert.equal(resyncs,0,'o regime estável não deve precisar de ressincronização');
+  assert.ok(newest - clock <= TRAIL, `o atraso final (${newest-clock}ms) deve caber no rastro`);
 });
 test('unfinished or last laps never become validated best laps', () => {
   const result = summarize([{...sample,last_lap_s:104.015}]);
@@ -60,7 +133,7 @@ test('the same sample arriving by bizevents and by otel is counted once', () => 
 test('samples without sample.id never collapse into each other', () => {
   const a = {...sample};
   const b = {...sample, timestamp:'2026-09-19T00:00:01Z'};
-  const other = {...sample, driver_name:'Outro'};
+  const other = {...sample, 'rig.id':'2'};
   assert.equal(mergeTelemetry([a],[b]).length, 2);
   assert.equal(mergeTelemetry([a],[other]).length, 2);
   assert.equal(mergeTelemetry([a],[{...a}]).length, 1);

@@ -71,8 +71,16 @@ jobs:
           [rig]
           rig_id = rig-01
           rig_name = Simulador 1
+          # Quem esta na cadeira. Preenchido aqui, vence o nome do perfil do
+          # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
+          driver_name =
+          company_name =
           ams2_port = 5606
           sink = both
+          # Quanto o rig segura as amostras antes de enviar. Menor =
+          # mapa mais perto do tempo real, mais requisicoes por segundo.
+          batch_size = 10
+          flush_interval = 1.0
           dt_env_url = https://SEU_AMBIENTE.live.dynatrace.com
           dt_api_token = COLE_O_TOKEN_AQUI
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini

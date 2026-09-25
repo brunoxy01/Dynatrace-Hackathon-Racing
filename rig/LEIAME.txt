@@ -22,6 +22,8 @@ Abra o racing.ini no Bloco de Notas e preencha:
                                    PRECISA SER DIFERENTE EM CADA PC.
   dt_env_url    = https://SEU_AMBIENTE.live.dynatrace.com
   dt_api_token  = dt0c01....
+  driver_name   =               <- veja o PASSO 4
+  company_name  =               <- veja o PASSO 4
 
 A URL e o token vem com o Bruno. Sem eles nada chega no Dynatrace.
 NAO mande o racing.ini preenchido por e-mail ou WhatsApp: ele tem o token.
@@ -53,17 +55,20 @@ Sem isso o jogo nao transmite nada e a tela fica parada em zero.
 
 PASSO 4 - o nome do piloto
 --------------------------
-No perfil do AMS2, escreva o nome ASSIM:
+O AMS2 nao pergunta o nome do piloto: ele usa o da conta Steam do PC
+(algo como "plinioaugusto01"). Como o rig e' compartilhado, escreva no
+racing.ini quem esta na cadeira:
 
-  Nome Sobrenome [Empresa]
+  driver_name  = Bruno Lima
+  company_name = Dynatrace
 
-Exemplos:
-  Bruno Lima [Dynatrace]
-  Joao Pereira [Bradesco]
+E' isso que aparece no painel. A empresa e' o que monta o podio
+"Disputa entre empresas". Basta salvar o racing.ini e reabrir o
+HackathonRacing.exe entre um cliente e o proximo.
 
-O programa separa sozinho o nome da empresa, e a empresa e' o que monta
-o podio "Disputa entre empresas" no painel. Sem os colchetes o piloto
-aparece, mas sem empresa.
+Se preferir deixar os dois em branco, o nome vem do perfil do AMS2, e
+ai' vale escrever la' no formato "Nome Sobrenome [Empresa]" - o
+programa separa sozinho o nome da empresa.
 
 
 PASSO 5 - no dia

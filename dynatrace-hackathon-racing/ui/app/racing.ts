@@ -28,6 +28,14 @@ export const metrics: Record<Metric, { label: string; unit: string; max: number 
   acceleration_g: { label: 'Aceleração', unit: 'g', max: 5 },
 };
 export const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+// O AMS2 emite quadros com velocidade impossível quando teletransporta o carro
+// (voltar aos boxes, reiniciar a sessão) ou quando a física o lança numa batida.
+// O coletor já descarta essas leituras, mas as sessões antigas no Grail ainda as
+// têm: sem este corte, um único quadro define a "velocidade máxima" do painel.
+export const MAX_SPEED_KMH = 400;
+// Mesmo problema no acelerômetro: zebra alta, batida e reposicionamento geram
+// picos de dezenas de g (105 g na captura real, contra 3,2 g de p99).
+export const MAX_G = 10;
 export function parseEvents(input: unknown): Telemetry[] {
   if (!Array.isArray(input)) return [];
   return input.flatMap((item: unknown) => {
@@ -36,9 +44,11 @@ export function parseEvents(input: unknown): Telemetry[] {
     if (typeof r.timestamp !== 'string' || !Number.isFinite(Date.parse(r.timestamp))) return [];
     const num = (key: string) => finite(r[key]) ? r[key] : null;
     const str = (key: string) => typeof r[key] === 'string' ? r[key] : null;
+    const speed = () => { const v = r.speed_kmh; return finite(v) && v >= 0 && v <= MAX_SPEED_KMH ? v : null; };
+    const gforce = () => { const v = r.acceleration_g; return finite(v) && v >= 0 && v <= MAX_G ? v : null; };
     return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), company_name:str('company_name'), source:str('source'),
-      speed_kmh:num('speed_kmh'), acceleration_g:num('acceleration_g'), gear:num('gear'), brake_pct:num('brake_pct'),
+      speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:num('pos_x'), pos_y:num('pos_y'), lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
   });
@@ -91,7 +101,12 @@ export function lapTime(value: number | null | undefined): string {
   return `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
 }
 export const number = (v: number | null | undefined, digits = 0) => finite(v) ? v.toLocaleString('pt-BR', { maximumFractionDigits: digits }) : '—';
-export const driverKey = (r: Telemetry) => JSON.stringify([r.driver_name, r['rig.id'], r['session.id'], r.car_name]);
+// Identidade de uma participação = simulador + sessão (o coletor gera uma
+// session.id nova a cada reinício, que é como se separa um cliente do próximo).
+// Piloto e carro NÃO entram na chave: eles chegam em pacotes UDP próprios, uns
+// 27s depois do primeiro quadro de telemetria, e ficam nulos até lá. Com eles na
+// chave, cada sessão virava dois pilotos — e dois carros parados no mapa.
+export const driverKey = (r: Telemetry) => JSON.stringify([r['rig.id'], r['session.id']]);
 export interface Driver extends Telemetry { key: string; best: number | null; peak: number; bestSource: 'simulator' | 'completed' | null; }
 export function summarize(events: Telemetry[]): Driver[] {
   const drivers = new Map<string, Driver>();
@@ -110,6 +125,43 @@ export function summarize(events: Telemetry[]): Driver[] {
     drivers.set(key, { ...event, key, bestSource, last_lap_s:event.last_lap_s ?? previous?.last_lap_s, best: best === null ? previous?.best ?? null : Math.min(previous?.best ?? Infinity, best), peak: Math.max(previous?.peak ?? 0, event.speed_kmh ?? 0) });
   }
   return [...drivers.values()].sort((a,b) => (a.best ?? Infinity) - (b.best ?? Infinity) || a.driver_name!.localeCompare(b.driver_name!));
+}
+
+// O Grail entrega um bloco de amostras por consulta, mas elas cobrem um
+// intervalo contínuo de pista. Agrupar por piloto e percorrer o bloco em tempo
+// real faz o carro deslizar no mapa, em vez de teletransportar uma vez por
+// consulta. Amostras sem posição não entram: não há onde desenhá-las.
+export function trails(events: Telemetry[]): Telemetry[][] {
+  const byDriver = new Map<string, Telemetry[]>();
+  for (const event of events) {
+    if (!finite(event.pos_x) || !finite(event.pos_y)) continue;
+    const key = driverKey(event);
+    const trail = byDriver.get(key);
+    if (trail) trail.push(event); else byDriver.set(key, [event]);
+  }
+  for (const trail of byDriver.values()) trail.sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  return [...byDriver.values()];
+}
+
+// Um passo do relógio de reprodução. Normalmente avança `step`, sem nunca
+// passar da amostra mais nova. Ressincroniza quando o relógio saiu da janela
+// coberta pelo bloco atual: troca de período, aba em segundo plano (o navegador
+// congela os timers) ou uma pausa longa na telemetria. O alvo da
+// ressincronização é `trail` atrás do fim, para sobrar pista a percorrer.
+export function advancePlayback(clock: number, oldest: number, newest: number, step: number, trail: number): number {
+  if (clock > newest || clock < Math.max(oldest, newest - 2 * trail)) return Math.max(oldest, newest - trail);
+  return Math.min(newest, clock + step);
+}
+
+// Última amostra da trilha até o instante `at`. Busca binária porque isto roda
+// a cada quadro da animação, sobre trilhas de até 10.000 pontos.
+export function sampleAt(trail: Telemetry[], at: number): Telemetry {
+  let low = 0, high = trail.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Date.parse(trail[middle].timestamp) <= at) low = middle; else high = middle - 1;
+  }
+  return trail[low];
 }
 
 // Average per track segment. Distance cutoff prevents outliers from coloring the track.

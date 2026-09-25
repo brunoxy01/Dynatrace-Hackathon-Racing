@@ -1,7 +1,8 @@
+import struct
 import unittest
 from pathlib import Path
 from ams2_collector import Collector
-from ams2_protocol import decode_header, decode_vehicle_names
+from ams2_protocol import decode_header, decode_telemetry, decode_vehicle_names
 
 
 class CaptureRegressionTests(unittest.TestCase):
@@ -25,6 +26,12 @@ class CaptureRegressionTests(unittest.TestCase):
         self.assertEqual(count, 7236)
         self.assertEqual(cars, {'Formula Ultimate Hybrid Gen2'})
         self.assertIn(104.015, last_laps)
+
+    def test_teleport_and_crash_frames_do_not_report_a_speed(self):
+        frame = bytearray(559)
+        for speed_ms, expected in ((83.5, 300.6), (160.9, None), (-1.0, None)):
+            struct.pack_into('<f', frame, 36, speed_ms)
+            self.assertEqual(expected, decode_telemetry(bytes(frame))['speed_kmh'])
 
 
 if __name__ == '__main__':
