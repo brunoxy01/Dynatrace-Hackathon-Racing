@@ -8,25 +8,12 @@ import { DataTable, type DataTableColumnDef } from '@dynatrace/strato-components
 import { TimeframeSelector } from '@dynatrace/strato-components/filters';
 import { Select } from '@dynatrace/strato-components/forms';
 import Colors from '@dynatrace/strato-design-tokens/colors';
-import captureData from './data/capture.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
-// A captura é constante: o preenchimento de identidade roda uma vez, na carga.
-const capture = backfillIdentity(parseEvents(captureData));
-// O replay não consulta o Grail, então não há período para escolher — mas a
-// gravação tem o seu, e escondê-lo fazia o modo parecer quebrado.
-const captureWindow = (() => {
-  if (!capture.length) return null;
-  const times = capture.map(e => Date.parse(e.timestamp));
-  const from = new Date(Math.min(...times)), to = new Date(Math.max(...times));
-  const seconds = Math.round((to.getTime() - from.getTime()) / 1000);
-  const hora = (d: Date) => d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
-  return `${from.toLocaleDateString('pt-BR')} · ${hora(from)}–${hora(to)} · ${Math.floor(seconds / 60)}min${String(seconds % 60).padStart(2, '0')}`;
-})();
 const isLocal = window.location.hostname === 'localhost';
 const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
 // Duas fontes independentes para a mesma telemetria: a API de business events
@@ -66,6 +53,22 @@ const QUERY_OTEL = `fetch logs
 | fields ${FIELDS}
 | sort timestamp desc
 | limit 10000`;
+// Amostras de UMA volta, para reproduzi-la no mapa. A volta é identificada pela
+// sessão; a janela de tempo é que a recorta, indo do fechamento para trás pelo
+// tempo da volta. A ~20 Hz, uma volta de 100s são ~2.000 amostras.
+const LAP_SAMPLES = (fonte: string, rig: string, session: string) => `fetch ${fonte}
+| filter event.type == "racing.telemetry"
+| filter \`rig.id\` == "${rig}" and \`session.id\` == "${session}"
+| fields ${FIELDS}
+| sort timestamp asc
+| limit 10000`;
+// rig.id e session.id vêm do próprio Grail, não de digitação do usuário, mas
+// entram concatenados numa consulta: lista branca em vez de confiar na origem.
+const dqlSafe = (value: string) => value.replace(/[^A-Za-z0-9._:|-]/g, '');
+// Margem nas duas pontas: o "fechamento" é o primeiro quadro que reportou o
+// tempo, não o instante exato do cruzamento da linha.
+const LAP_MARGIN_MS = 2000;
+
 // A telemetria recarrega rápido para o mapa acompanhar a pista. As voltas
 // concluídas não precisam: uma volta em Interlagos leva ~100s, e cada ciclo
 // completo custa quatro consultas ao Grail de até 10.000 registros.
@@ -142,25 +145,61 @@ export const Dashboard = () => {
   }, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
   const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
+  // A lista de voltas alimenta tanto o drill down do modo ao vivo quanto a
+  // escolha da volta a reproduzir, então vale nos dois modos.
+  const periodEnabled = (mode === 'live' || mode === 'replay') && Boolean(lapBounds.from && lapBounds.to);
   const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
   const liveOtel = useDql<Telemetry>({ query: QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
-  const liveLaps = useDql<Telemetry>({ query: QUERY_LAPS, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: liveEnabled });
-  const liveLapsOtel = useDql<Telemetry>({ query: QUERY_LAPS_OTEL, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: liveEnabled });
+  const liveLaps = useDql<Telemetry>({ query: QUERY_LAPS, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled });
+  const liveLapsOtel = useDql<Telemetry>({ query: QUERY_LAPS_OTEL, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled });
+
+  // Volta escolhida para reproduzir. A janela sai do próprio registro: fecha em
+  // `timestamp`, dura `last_lap_s`.
+  const [replayLap, setReplayLap] = useState<Telemetry | null>(null);
+  const replay = useMemo(() => {
+    const janela = replayLap && lapWindow(replayLap, LAP_MARGIN_MS);
+    if (!replayLap || !janela) return null;
+    return {
+      ...janela,
+      biz: LAP_SAMPLES('bizevents', dqlSafe(replayLap['rig.id']), dqlSafe(replayLap['session.id'])),
+      otel: LAP_SAMPLES('logs', dqlSafe(replayLap['rig.id']), dqlSafe(replayLap['session.id'])),
+    };
+  }, [replayLap]);
+  const replayEnabled = mode === 'replay' && replay !== null;
+  const lapBiz = useDql<Telemetry>({ query: replay?.biz ?? QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:replay?.from, defaultTimeframeEnd:replay?.to }, { enabled: replayEnabled });
+  const lapOtel = useDql<Telemetry>({ query: replay?.otel ?? QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:replay?.from, defaultTimeframeEnd:replay?.to }, { enabled: replayEnabled });
+  const lapSamples = useMemo(() => replayEnabled
+    ? backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))
+        .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+    : [], [replayEnabled, lapBiz.data, lapOtel.data]);
+  // Passo tirado das próprias amostras: reproduz em 1× tanto num rig a 20 Hz
+  // quanto a 60 Hz, sem depender da frequência configurada no jogo.
+  const replayStep = lapSamples.length > 1
+    ? Math.max(20, (Date.parse(lapSamples[lapSamples.length-1].timestamp) - Date.parse(lapSamples[0].timestamp)) / lapSamples.length)
+    : 50;
+  useEffect(() => { if (lapSamples.length) { setCursor(0); setPlaying(true); } }, [lapSamples]);
   useEffect(() => {
-    if (!playing || mode !== 'capture') return;
-    const timer = window.setInterval(() => setCursor(v => Math.min(capture.length, v + 20)), 250);
+    if (!playing || mode !== 'replay' || !lapSamples.length) return;
+    const timer = window.setInterval(() => setCursor(v => Math.min(lapSamples.length, v + 1)), replayStep);
     return () => window.clearInterval(timer);
-  }, [playing, mode]);
-  useEffect(() => { if (cursor >= capture.length) setPlaying(false); }, [cursor]);
+  }, [playing, mode, lapSamples, replayStep]);
+  useEffect(() => { if (mode === 'replay' && lapSamples.length && cursor >= lapSamples.length) setPlaying(false); }, [cursor, mode, lapSamples.length]);
   const janela = `${mode}|${timeframe.from}|${timeframe.to}`;
   const liveData = useUltimoResultado(live.data, janela);
   const liveOtelData = useUltimoResultado(liveOtel.data, janela);
   const liveLapsData = useUltimoResultado(liveLaps.data, janela);
   const liveLapsOtelData = useUltimoResultado(liveLapsOtel.data, janela);
-  const events = useMemo(() => mode === 'stream' ? backfillIdentity(stream.events) : mode === 'capture' ? capture.slice(0, cursor) : backfillIdentity(mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records))), [mode, cursor, liveData, liveOtelData, stream.events]);
-  const lapResults = useMemo(() => mode === 'live'
+  const events = useMemo(() => mode === 'stream' ? backfillIdentity(stream.events) : mode === 'replay' ? lapSamples.slice(0, cursor) : backfillIdentity(mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records))), [mode, cursor, lapSamples, liveData, liveOtelData, stream.events]);
+  const lapResults = useMemo(() => mode === 'live' || mode === 'replay'
     ? mergeTelemetry(parseEvents(liveLapsData?.records), parseEvents(liveLapsOtelData?.records))
     : [], [mode, liveLapsData, liveLapsOtelData]);
+  // No replay, o seletor de piloto lista quem correu no PERÍODO — isso vem das
+  // voltas, não da telemetria já reproduzida, que é de um piloto só.
+  const lapDrivers = useMemo(() => {
+    const porPiloto = new Map<string, Telemetry>();
+    for (const lap of lapResults) if (!porPiloto.has(driverKey(lap))) porPiloto.set(driverKey(lap), lap);
+    return [...porPiloto.values()];
+  }, [lapResults]);
   const drivers = useMemo(() => applyLapResults(summarize(events), lapResults), [events, lapResults]);
   const filtered = useMemo(() => selected === 'all' ? events : events.filter(e => driverKey(e) === selected), [events, selected]);
   // Em "Todos os pilotos" o card segue quem está na pista agora, não quem lidera:
@@ -185,6 +224,7 @@ export const Dashboard = () => {
   }, [drivers]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
+  const lapLoading = lapBiz.isLoading || lapOtel.isLoading;
   // Ticker próprio: o "sem telemetria há Ns" precisa subir sozinho entre as
   // reexecuções da consulta, que só acontecem a cada 30s.
   const [tick, setTick] = useState(0);
@@ -210,13 +250,19 @@ export const Dashboard = () => {
     }
     return { fresh, rigs: rigs.size, silentFor: newest ? Math.round((now - newest) / 1000) : null };
   })();
-  const changeMode = (value: string | null) => { if (value) { setMode(value); refresh(); setPlaying(false); setSelected('all'); if (value === 'capture') setCursor(0); } };
+  const changeMode = (value: string | null) => { if (value) { setMode(value); refresh(); setPlaying(false); setSelected('all'); setCursor(0); setReplayLap(null); } };
+  // Colunas do replay: a ação de reproduzir vem antes dos dados da volta.
+  const replayColumns = useMemo<DataTableColumnDef<Telemetry>[]>(() => [
+    { id: 'play', header: 'Replay', minWidth: 118, disableSorting: true,
+      cell: ({rowData}) => <Button onClick={() => setReplayLap(rowData)}>Reproduzir</Button> },
+    ...lapColumns,
+  ], []);
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
       <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div></div>
       <div className="status-group">
-      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'capture' ? 'Captura real do Automobilista 2' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+      <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `Volta ${number((replayLap.lap_number ?? 1) - 1)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
       {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
         <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
         {pulse.fresh
@@ -227,19 +273,21 @@ export const Dashboard = () => {
     </header>
     <section className="toolbar" aria-label="Controles da corrida">
       <Flex alignItems="center" gap={12} flexWrap="wrap">
-        <Select aria-label="Fonte dos dados" value={mode} onChange={changeMode}><Select.Content>{isLocal && <Select.Option value="stream">Script · tempo real</Select.Option>}<Select.Option value="capture">Replay da captura</Select.Option><Select.Option value="live">Grail · histórico e ao vivo</Select.Option></Select.Content></Select>
-        {mode === 'capture' && captureWindow && <span className="small-tag" aria-label="Período da gravação">{captureWindow}</span>}
-        {mode === 'live' && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');}}} />}
-        <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>
+        <Select aria-label="Fonte dos dados" value={mode} onChange={changeMode}><Select.Content>{isLocal && <Select.Option value="stream">Script · tempo real</Select.Option>}<Select.Option value="replay">Replay de uma volta</Select.Option><Select.Option value="live">Grail · histórico e ao vivo</Select.Option></Select.Content></Select>
+        {(mode === 'live' || mode === 'replay') && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
+        <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{(mode === 'replay' ? lapDrivers.map(l => ({key: driverKey(l), driver_name: l.driver_name, rig: l['rig.id']})) : drivers.map(d => ({key: d.key, driver_name: d.driver_name, rig: d['rig.id']}))).map(o => <Select.Option key={o.key} value={o.key}>{o.driver_name ?? 'Piloto sem nome'} · {o.rig}</Select.Option>)}</Select.Content></Select>
         {mode === 'live' && <Select aria-label="Detalhamento da tabela" value={view} onChange={v => setView(v ?? 'ranking')}><Select.Content><Select.Option value="ranking">Classificação · Top 10</Select.Option><Select.Option value="laps">Voltas registradas</Select.Option></Select.Content></Select>}
       </Flex>
       <Flex alignItems="center" gap={8}>
-        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'capture' ? <><span className="muted">Replay 4×</span><Button onClick={() => { if (cursor >= capture.length) setCursor(0); setPlaying(!playing); }} variant="emphasized">{playing ? 'Pausar replay' : !cursor || cursor === capture.length ? 'Reproduzir captura' : 'Continuar replay'}</Button><Button onClick={() => {setCursor(0);setPlaying(false);setSelected('all');}}>Limpar pista</Button></> : <Button onClick={() => { if (timeframe.to === 'now()') refresh(); else { void live.refetch(); void liveOtel.refetch(); void liveLaps.refetch(); void liveLapsOtel.refetch(); } }} loading={liveLoading}>Atualizar</Button>}
+        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></> : mode === 'replay' ? <>{replayLap && <span className="muted">{lapLoading ? 'Carregando a volta…' : `${number(lapSamples.length)} amostras · 1×`}</span>}<Button variant="emphasized" disabled={!lapSamples.length} onClick={() => { if (cursor >= lapSamples.length) setCursor(0); setPlaying(!playing); }}>{playing ? 'Pausar' : cursor && cursor < lapSamples.length ? 'Continuar' : 'Reproduzir de novo'}</Button><Button disabled={!replayLap} onClick={() => {setReplayLap(null);setCursor(0);setPlaying(false);}}>Limpar pista</Button></> : <Button onClick={() => { if (timeframe.to === 'now()') refresh(); else { void live.refetch(); void liveOtel.refetch(); void liveLaps.refetch(); void liveLapsOtel.refetch(); } }} loading={liveLoading}>Atualizar</Button>}
       </Flex>
     </section>
     {mode === 'stream' && stream.error && <div className="notice error" role="alert">O script local não está conectado. Execute <code>python replay_server.py</code> na raiz do repositório. A pista mantém os últimos dados recebidos até a conexão voltar.</div>}
     {mode === 'stream' && events.some(e => e.source === 'demo') && <div className="notice" role="status">Demonstração: piloto da captura + Bruno Lima / Dynatrace, Joãozinho / Bradesco e Agnes / Caixa simulados. Tempos e empresas desses três pilotos são dados de teste.</div>}
     {mode === 'live' && live.error && <div className="notice error" role="alert">Não foi possível consultar a telemetria: {live.error.message}. Verifique o acesso a business events e tente atualizar.</div>}
+    {mode === 'replay' && !replayLap && <div className="notice" role="status">Escolha o período e clique em <b>Reproduzir</b> na volta que quiser ver. A volta é reproduzida no mapa em tempo real, a partir das amostras gravadas no Grail.</div>}
+    {mode === 'replay' && liveLaps.error && <div className="notice error" role="alert">Não foi possível listar as voltas: {liveLaps.error.message}</div>}
+    {mode === 'replay' && replayLap && !lapLoading && !lapSamples.length && <div className="notice error" role="alert">A volta foi listada, mas as amostras dela não voltaram do Grail. O período de retenção pode já ter expirado para esse intervalo.</div>}
     {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos foi encontrado no período selecionado. Amplie o intervalo ou confira a ingestão. Os eventos do script local não são enviados ao Grail.</div>}
     {mode === 'live' && liveLaps.error && <div className="notice error" role="alert">Não foi possível consultar as voltas concluídas: {liveLaps.error.message}. O pódio "Disputa entre empresas" e a lista de voltas ficam vazios até isso ser resolvido.</div>}
     {mode === 'live' && !live.error && liveOtel.error && <div className="notice" role="status">A fonte OTel (logs do collector do rig) não respondeu: {liveOtel.error.message}. O painel segue mostrando os business events. Confira o escopo <code>storage:logs:read</code> e se o collector do rig está de pé.</div>}
@@ -251,19 +299,21 @@ export const Dashboard = () => {
         <TrackMap events={filtered} carName={focus?.car_name} animate={mode === 'live'} />
         <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : 'Pista cinza · aguardando eventos'}</span></div>
         {mode === 'stream' && stream.running && <progress aria-label="Progresso da simulação" max={stream.total} value={events.length}/>}
-        {playing && <progress aria-label="Progresso do replay" max={capture.length} value={cursor}/>}
+        {mode === 'replay' && playing && <progress aria-label="Progresso do replay" max={lapSamples.length} value={cursor}/>}
       </section>
       <div className="driver-column">
         <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="small-tag">{focus?.company_name ?? 'Empresa não informada'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
-        <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{mode === 'live' ? 'Última leitura no período' : 'Dados de demonstração'}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div></section>
+        <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{mode === 'live' ? 'Última leitura no período' : mode === 'replay' ? 'Quadro atual da volta' : 'Dados de demonstração'}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div></section>
       </div>
     </div>
     <div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
     <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place">{String(i+1).padStart(2,'0')}</span><div><strong>{companies[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{companies[i] ? companies[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(companies[i]?.best)}</b></div>)}</section>
     <section className="kpis"><div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div><div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{best ? `${best.driver_name} · ${best.bestSource === 'simulator' ? 'informada pelo simulador' : 'calculada das voltas concluídas'}` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(best?.best)}</strong><div className="kpi-line purple"/></div></section>
-    {view === 'laps' && mode === 'live'
+    {mode === 'replay'
+      ? <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO DO PERÍODO</span><Heading level={2}>Voltas registradas</Heading></div><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span></div><p className="muted">Todas as voltas válidas concluídas no período selecionado{selected === 'all' ? ', de todos os pilotos' : ', do piloto selecionado'}. Clique em <b>Reproduzir</b> para ver a volta no mapa, em tempo real.</p><DataTable data={laps} columns={replayColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado. Amplie o intervalo.</DataTable.EmptyState></DataTable></section>
+      : view === 'laps' && mode === 'live'
       ? <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">DRILL DOWN</span><Heading level={2}>Voltas registradas</Heading></div><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span></div><p className="muted">Todas as voltas válidas concluídas no período selecionado{selected === 'all' ? ', de todos os pilotos' : ', do piloto selecionado'}. Voltas invalidadas pelo simulador não entram. Use o seletor de período para ampliar o histórico.</p><DataTable data={laps} columns={lapColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
       : <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Melhores tempos registrados primeiro. Cálculo local exige início e fechamento da volta, sem invalidação nas amostras recebidas.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth sortable loading={mode === 'live' && liveLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>}
-    <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · captura e pilotos simulados identificados · sem ingestão' : mode === 'capture' ? 'Fonte: captura UDP real do Automobilista 2 · replay local, sem ingestão' : 'Fonte: Grail · racing.telemetry · período selecionado · intervalos até agora atualizam a cada 30 segundos'}</span></footer>
+    <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · captura e pilotos simulados identificados · sem ingestão' : mode === 'replay' ? 'Fonte: Grail · racing.telemetry · uma volta reproduzida em tempo real a partir das amostras gravadas' : 'Fonte: Grail · racing.telemetry · período selecionado · intervalos até agora atualizam a cada 30 segundos'}</span></footer>
   </main>;
 };

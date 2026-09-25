@@ -1,6 +1,6 @@
 {
   "name": "dynatrace-hackathon-racing",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "Interlagos racing telemetry dashboard built with Dynatrace Strato",
   "scripts": {
     "build": "dt-app build",

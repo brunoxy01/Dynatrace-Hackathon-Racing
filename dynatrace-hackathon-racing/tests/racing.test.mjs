@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -33,6 +33,22 @@ test('samples from before the name and car arrive belong to the same driver', ()
   assert.equal(result.length, 1);
   assert.equal(result[0].driver_name, 'Pilot');
   assert.equal(result[0].car_name, 'Formula');
+});
+test('the lap window ends at the close and reaches back one lap time', () => {
+  // A volta fechou às 00:01:44 e durou 104,015s: a janela começa na largada.
+  const lap = {...sample, timestamp:'2026-09-19T00:01:44.000Z', last_lap_s:104.015};
+  assert.deepEqual(lapWindow(lap, 2000), {
+    from:'2026-09-18T23:59:57.985Z',
+    to:'2026-09-19T00:01:46.000Z',
+  });
+  // Sem margem, a janela dura exatamente o tempo da volta.
+  const exata = lapWindow(lap, 0);
+  assert.equal((Date.parse(exata.to) - Date.parse(exata.from)) / 1000, 104.015);
+});
+test('laps without a usable duration produce no window', () => {
+  assert.equal(lapWindow({...sample, last_lap_s:null}, 2000), null);
+  assert.equal(lapWindow({...sample, last_lap_s:0}, 2000), null);
+  assert.equal(lapWindow({...sample, timestamp:'nao é data', last_lap_s:90}, 2000), null);
 });
 test('the name and car learned later fill in the start of the same session', () => {
   const warmup = {...sample, driver_name:null, car_name:null};

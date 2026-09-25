@@ -166,6 +166,20 @@ export function trails(events: Telemetry[]): Telemetry[][] {
   return [...byDriver.values()];
 }
 
+// Janela de tempo que contém uma volta, para buscar as amostras dela no Grail.
+// O registro da volta traz o instante em que ela FECHOU e quanto durou, então a
+// volta é o intervalo que termina ali. A margem cobre as duas pontas: o
+// fechamento é o primeiro quadro que reportou o tempo, não o cruzamento exato
+// da linha. Devolve null quando o registro não tem duração utilizável.
+export function lapWindow(lap: Telemetry, marginMs: number): {from: string; to: string} | null {
+  const closed = Date.parse(lap.timestamp);
+  if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0 || !Number.isFinite(closed)) return null;
+  return {
+    from: new Date(closed - lap.last_lap_s * 1000 - marginMs).toISOString(),
+    to: new Date(closed + marginMs).toISOString(),
+  };
+}
+
 // Um passo do relógio de reprodução. Normalmente avança `step`, sem nunca
 // passar da amostra mais nova. Ressincroniza quando o relógio saiu da janela
 // coberta pelo bloco atual: troca de período, aba em segundo plano (o navegador
