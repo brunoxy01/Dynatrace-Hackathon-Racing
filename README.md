@@ -16,6 +16,14 @@ A versão **0.3.0** é um checkpoint de desenvolvimento. OpenPipeline, cadastro 
 
 As imagens mostram a demonstração: a captura original e três pilotos sintéticos, identificados no app, com empresas de teste.
 
+## Primeiro dado real de um rig
+
+![Painel com telemetria real de um rig](docs/images/rig-real-painel.png)
+
+![Top 10 com o piloto real e a volta calculada](docs/images/rig-real-top10.png)
+
+Telemetria real do Automobilista 2, saindo de um simulador Windows via o pacote `HackathonRacing.exe`, passando pelo OTel Collector local e chegando ao Grail. Nenhum evento sintético nessas capturas — é o pipeline completo (UDP → coletor → collector → Dynatrace) validado de ponta a ponta.
+
 ## De onde vêm os valores
 
 ```mermaid
