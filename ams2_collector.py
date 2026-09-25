@@ -42,8 +42,10 @@ import argparse
 import json
 import re
 import os
+import queue
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -130,18 +132,35 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
     }
 
 
-def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.0) -> bool:
+def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.0,
+               tentativas: int = 3) -> bool:
+    """POST com retry nas falhas transitorias.
+
+    Rede de evento oscila: um handshake TLS que estoura o tempo derrubava o lote
+    inteiro na primeira tentativa. Erros 4xx nao sao repetidos - token errado ou
+    escopo faltando nao melhoram insistindo, so' atrasam o proximo lote.
+    """
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp.read()
-        return True
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        print(f"[erro] {what}: HTTP {e.code} - {detail[:300]}", file=sys.stderr)
-    except urllib.error.URLError as e:
-        print(f"[erro] {what}: falha de conexao - {e}", file=sys.stderr)
+    ultimo = "desconhecido"
+    for tentativa in range(1, tentativas + 1):
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp.read()
+            if tentativa > 1:
+                print(f"[info] {what}: entregue na tentativa {tentativa}", file=sys.stderr)
+            return True
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            if e.code < 500 and e.code != 429:
+                print(f"[erro] {what}: HTTP {e.code} - {detail[:300]}", file=sys.stderr)
+                return False
+            ultimo = f"HTTP {e.code} - {detail[:150]}"
+        except (urllib.error.URLError, OSError) as e:
+            ultimo = f"falha de conexao - {e}"
+        if tentativa < tentativas:
+            time.sleep(min(2 ** (tentativa - 1), 4))
+    print(f"[erro] {what}: {ultimo} (desisti apos {tentativas} tentativas)", file=sys.stderr)
     return False
 
 
@@ -245,6 +264,48 @@ class Collector:
         return None
 
 
+class EnvioEmSegundoPlano:
+    """Tira o POST remoto da thread que le o socket UDP.
+
+    Sem isto, uma rede lenta trava o recvfrom por dezenas de segundos e o buffer
+    do socket transborda: perde-se telemetria que o jogo ja' tinha mandado. A fila
+    e' limitada de proposito - se o destino ficar fora do ar por muito tempo,
+    e' melhor descartar o mais antigo e avisar do que inchar a memoria do rig.
+    """
+
+    def __init__(self, envia, nome: str, limite: int = 500):
+        self.fila: "queue.Queue[list]" = queue.Queue(maxsize=limite)
+        self.envia = envia
+        self.nome = nome
+        self.descartados = 0
+        self.thread = threading.Thread(target=self._laco, name=f"envio-{nome}", daemon=True)
+        self.thread.start()
+
+    def _laco(self) -> None:
+        while True:
+            lote = self.fila.get()
+            try:
+                if lote:
+                    self.envia(lote)
+            except Exception as erro:  # nunca deixar a thread de envio morrer
+                print(f"[erro] {self.nome}: {erro}", file=sys.stderr)
+            finally:
+                self.fila.task_done()
+
+    def enfileirar(self, lote: list) -> None:
+        try:
+            self.fila.put_nowait(lote)
+        except queue.Full:
+            self.descartados += len(lote)
+            print(f"[!!] {self.nome}: fila cheia, {self.descartados} amostras descartadas no total",
+                  file=sys.stderr)
+
+    def drenar(self, segundos: float = 15.0) -> None:
+        limite = time.time() + segundos
+        while not self.fila.empty() and time.time() < limite:
+            time.sleep(0.2)
+
+
 class Dispatcher:
     """Entrega cada lote aos destinos escolhidos em --sink."""
 
@@ -253,6 +314,11 @@ class Dispatcher:
         self.ingest_url = ingest_url
         self.to_bizevents = args.sink in ("bizevents", "both") and bool(ingest_url) and not args.dry_run
         self.to_otlp = args.sink in ("otlp", "both") and not args.dry_run
+        # So' o bizevents sai da maquina; o OTLP vai para o collector em 127.0.0.1,
+        # que aceita na hora e ja' tem fila em disco e reenvio proprios.
+        self._bizevents = EnvioEmSegundoPlano(
+            lambda lote: post_events(self.ingest_url, self.args.token, lote), "bizevents",
+        ) if self.to_bizevents else None
 
     def describe(self) -> str:
         if self.args.dry_run:
@@ -270,10 +336,15 @@ class Dispatcher:
     def flush(self, batch: list) -> None:
         if not batch:
             return
-        if self.to_bizevents:
-            post_events(self.ingest_url, self.args.token, batch)
+        if self._bizevents is not None:
+            self._bizevents.enfileirar(list(batch))
         if self.to_otlp:
             post_otlp(self.args.otlp_endpoint, batch)
+
+    def encerrar(self) -> None:
+        """Da' chance de a fila esvaziar antes de o processo morrer."""
+        if self._bizevents is not None:
+            self._bizevents.drenar()
 
 
 def run_udp(args, dispatcher: "Dispatcher") -> int:
@@ -306,6 +377,8 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
         print("\n[info] interrompido pelo usuario")
         dispatcher.flush(batch)
         sent += len(batch)
+        print("[..] esvaziando a fila de envio")
+        dispatcher.encerrar()
         print(f"[info] total enviado: {sent} amostras")
     return 0
 
@@ -358,6 +431,7 @@ def run_replay(args, dispatcher: "Dispatcher") -> int:
         print(f"[info] replay #{loop_count} concluido ({n} pacotes lidos de {args.file})")
         if not args.loop:
             break
+    dispatcher.encerrar()
     return 0
 
 
