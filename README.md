@@ -8,14 +8,6 @@ Fomos a um local com simuladores e capturamos os pacotes UDP do Automobilista 2 
 
 A versão **0.3.0** é um checkpoint de desenvolvimento. OpenPipeline, cadastro piloto/empresa, logos e workflow de métricas são próximos passos; não estão provisionados nesta release.
 
-## Prints do app
-
-![Interlagos recebendo telemetria](docs/images/replay-progress.png)
-
-![Volta concluída e indicadores](docs/images/replay-finished.png)
-
-As imagens mostram a demonstração: a captura original e três pilotos sintéticos, identificados no app, com empresas de teste.
-
 ## Primeiro dado real de um rig
 
 ![Painel com telemetria real de um rig](docs/images/rig-real-painel.png)
