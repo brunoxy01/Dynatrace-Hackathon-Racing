@@ -209,13 +209,26 @@ export function companyPodium(lapsSortedByTime: Telemetry[], size: number): Tele
 // volta é o intervalo que termina ali. A margem cobre as duas pontas: o
 // fechamento é o primeiro quadro que reportou o tempo, não o cruzamento exato
 // da linha. Devolve null quando o registro não tem duração utilizável.
-export function lapWindow(lap: Telemetry, marginMs: number): {from: string; to: string} | null {
+// As margens são assimétricas de propósito. O instante registrado é o primeiro
+// quadro que REPORTOU o tempo, e ele pode chegar bem depois do cruzamento: o
+// jogo carrega o último tempo entre sessões, então um coletor reiniciado
+// re-anuncia uma volta antiga. Margem generosa ANTES garante que a largada
+// caia dentro da janela; o recorte final acha o ponto exato.
+export function lapWindow(lap: Telemetry, beforeMs: number, afterMs: number): {from: string; to: string} | null {
   const closed = Date.parse(lap.timestamp);
   if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0 || !Number.isFinite(closed)) return null;
   return {
-    from: new Date(closed - lap.last_lap_s * 1000 - marginMs).toISOString(),
-    to: new Date(closed + marginMs).toISOString(),
+    from: new Date(closed - lap.last_lap_s * 1000 - beforeMs).toISOString(),
+    to: new Date(closed + afterMs).toISOString(),
   };
+}
+
+// A volta recortada realmente começa na linha? Se o primeiro quadro já tem
+// cronômetro andando, a largada ficou fora da janela buscada e a reprodução
+// começaria no meio — melhor avisar do que mostrar a volta errada.
+export function startsAtLine(samples: Telemetry[]): boolean {
+  const primeiro = samples[0]?.lap_time_s;
+  return finite(primeiro) && primeiro <= 1.5;
 }
 
 // Um passo do relógio de reprodução. Normalmente avança `step`, sem nunca

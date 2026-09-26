@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, lapProfile, deltaToReference } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -90,14 +90,18 @@ const LAP_SAMPLES = (fonte: string, rig: string, session: string) => `fetch ${fo
 // rig.id e session.id vêm do próprio Grail, não de digitação do usuário, mas
 // entram concatenados numa consulta: lista branca em vez de confiar na origem.
 const dqlSafe = (value: string) => value.replace(/[^A-Za-z0-9._:|-]/g, '');
-// Margem nas duas pontas: o "fechamento" é o primeiro quadro que reportou o
-// tempo, não o instante exato do cruzamento da linha.
-const LAP_MARGIN_MS = 2000;
+// O "fechamento" registrado é o primeiro quadro que REPORTOU o tempo, e ele
+// pode chegar muito depois do cruzamento — o jogo carrega o último tempo entre
+// sessões, então um coletor reiniciado re-anuncia uma volta antiga. Meio minuto
+// de folga antes cobre isso; o recorte por cronômetro acha a largada exata.
+const LAP_MARGIN_BEFORE_MS = 30000;
+const LAP_MARGIN_AFTER_MS = 3000;
 
 // Só a telemetria do mapa recarrega sozinha — é o que precisa acompanhar a
 // pista. As tabelas de voltas NÃO: recarregar sozinha descartava a ordenação e
 // a página em que a pessoa estava, no meio da leitura. Elas têm botão próprio.
 const TELEMETRY_REFRESH_MS = 5000;
+const LAPS_REFRESH_MS = 15000;
 
 // sortType padrão do DataTable é 'text': sem marcar as colunas numéricas, 10
 // viria antes de 9. Onde o accessor devolve texto formatado (tempos de volta,
@@ -152,7 +156,12 @@ export const Dashboard = () => {
   useEffect(() => {
     if (mode !== 'live' || timeframe.to !== 'now()') return;
     const telemetria = window.setInterval(() => setQueryTime(Date.now()), TELEMETRY_REFRESH_MS);
-    return () => window.clearInterval(telemetria);
+    // A lista de voltas só se recarrega sozinha no Ao vivo — é onde a volta
+    // recém-concluída precisa aparecer sem ninguém pedir. No Placar e no Replay
+    // isso descartava a ordenação e a página no meio da leitura, e lá o botão
+    // "Atualizar" manda.
+    const voltas = mode === 'live' ? window.setInterval(() => setLapsTime(Date.now()), LAPS_REFRESH_MS) : undefined;
+    return () => {window.clearInterval(telemetria); if (voltas !== undefined) window.clearInterval(voltas);};
   }, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
   const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
@@ -168,7 +177,7 @@ export const Dashboard = () => {
   // `timestamp`, dura `last_lap_s`.
   const [replayLap, setReplayLap] = useState<Telemetry | null>(null);
   const replay = useMemo(() => {
-    const janela = replayLap && lapWindow(replayLap, LAP_MARGIN_MS);
+    const janela = replayLap && lapWindow(replayLap, LAP_MARGIN_BEFORE_MS, LAP_MARGIN_AFTER_MS);
     if (!replayLap || !janela) return null;
     return {
       ...janela,
@@ -188,6 +197,7 @@ export const Dashboard = () => {
     : [], [replayEnabled, replayLap, lapBiz.data, lapOtel.data]);
   // Passo tirado das próprias amostras: reproduz em 1× tanto num rig a 20 Hz
   // quanto a 60 Hz, sem depender da frequência configurada no jogo.
+  const replayFromLine = startsAtLine(lapSamples);
   const replayStep = lapSamples.length > 1
     ? Math.max(20, (Date.parse(lapSamples[lapSamples.length-1].timestamp) - Date.parse(lapSamples[0].timestamp)) / lapSamples.length)
     : 50;
@@ -254,7 +264,7 @@ export const Dashboard = () => {
   // como as transmissões de F1 montam o delta ao vivo.
   const referenceLap = ranking[0] ?? null;
   const reference = useMemo(() => {
-    const janela = referenceLap && lapWindow(referenceLap, LAP_MARGIN_MS);
+    const janela = referenceLap && lapWindow(referenceLap, LAP_MARGIN_BEFORE_MS, LAP_MARGIN_AFTER_MS);
     if (!referenceLap || !janela) return null;
     return {
       ...janela,
@@ -367,6 +377,7 @@ export const Dashboard = () => {
     {!replayLap && <div className="notice" role="status">Escolha o período e clique em <b>Reproduzir</b> na volta que quiser ver. Ela roda no mapa em tempo real, com a telemetria do piloto ao lado.</div>}
     {liveLaps.error && <div className="notice error" role="alert">Não foi possível listar as voltas: {liveLaps.error.message}</div>}
     {replayLap && !lapLoading && !lapSamples.length && <div className="notice error" role="alert">A volta foi listada, mas as amostras dela não voltaram do Grail. O período de retenção pode já ter expirado para esse intervalo.</div>}
+    {replayLap && !lapLoading && lapSamples.length > 0 && !replayFromLine && <div className="notice" role="status">Esta volta começa com o cronômetro em {lapTime(lapSamples[0].lap_time_s)}: a largada dela ficou fora do trecho gravado. O simulador carrega o último tempo entre sessões, então uma volta antiga pode ser reanunciada por um coletor reiniciado. A reprodução mostra o que existe, do ponto em que os dados começam.</div>}
     <div className="hero-grid">
       {mapa('Pista cinza · escolha uma volta abaixo', playing ? <progress aria-label="Progresso do replay" max={lapSamples.length} value={cursor}/> : undefined)}
       {painelDoPiloto('Quadro atual da volta')}
