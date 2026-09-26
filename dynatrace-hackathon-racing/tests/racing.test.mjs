@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, lapProfile, deltaToReference } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -263,4 +263,42 @@ test('podium ordering follows the times brought by the lap query', () => {
     {...sample, driver_name:'C', 'rig.id':'3', last_lap_s:112},
   ]);
   assert.deepEqual(ordenado.map(d => d.driver_name), ['B','A','C']);
+});
+
+// A janela buscada no Grail tem margem nas duas pontas: começa antes da largada
+// e termina depois. O recorte precisa deixar só a volta.
+const quadro = (t, x, y) => ({...sample, lap_time_s:t, pos_x:x, pos_y:y, timestamp:`2026-09-19T00:00:${String(Math.floor(t)+10).padStart(2,'0')}Z`});
+test('lap trimming starts at the line, not before it', () => {
+  const janela = [
+    // cauda da volta anterior: o jogo ainda não reportava cronômetro
+    {...quadro(0, -20, 0), lap_time_s:null}, {...quadro(0, -10, 0), lap_time_s:null},
+    quadro(0.05, 0, 0), quadro(30, 100, 0), quadro(60, 200, 0), quadro(89.9, 5, 0),
+    // já é a volta seguinte: cronômetro zerou
+    quadro(0.04, 0, 0), quadro(1.2, 10, 0),
+  ];
+  const volta = trimToLap(janela, 90);
+  assert.equal(volta.length, 4, 'só os quadros da volta');
+  assert.equal(volta[0].lap_time_s, 0.05, 'começa na largada, não antes');
+  assert.equal(volta[volta.length-1].lap_time_s, 89.9, 'termina ao fechar, não na volta seguinte');
+});
+test('lap trimming leaves samples alone when there is no usable timer', () => {
+  const cegos = [{...sample, lap_time_s:null}, {...sample, lap_time_s:null}];
+  assert.equal(trimToLap(cegos, 90).length, 2);
+});
+test('delta is zero against the reference lap itself and blank at the line', () => {
+  const nodes = [[0,0],[100,0],[200,0]];
+  const referencia = [quadro(0.0, 0, 0), quadro(30, 100, 0), quadro(60, 200, 0)];
+  const perfil = lapProfile(referencia, nodes);
+  assert.deepEqual(perfil, [0, 30, 60]);
+  // mesmo ponto, mesmo tempo -> sem diferença
+  assert.equal(deltaToReference(quadro(30, 100, 0), perfil, nodes, 90), 0);
+  // dois segundos atrás do líder no mesmo ponto
+  assert.equal(deltaToReference(quadro(32, 100, 0), perfil, nodes, 90), 2);
+  // dois segundos à frente
+  assert.equal(deltaToReference(quadro(28, 100, 0), perfil, nodes, 90), -2);
+  // fechando a volta sobre a largada: casaria com o instante zero e daria uma
+  // volta inteira de diferença — não há comparação a fazer ali
+  assert.equal(deltaToReference(quadro(89.5, 0, 0), perfil, nodes, 90), null);
+  // fora da pista: sem ponto de referência
+  assert.equal(deltaToReference(quadro(30, 9999, 9999), perfil, nodes, 90), null);
 });

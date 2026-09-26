@@ -9,18 +9,30 @@ import { TimeframeSelector } from '@dynatrace/strato-components/filters';
 import { Select } from '@dynatrace/strato-components/forms';
 import { Tabs, Tab } from '@dynatrace/strato-components/navigation';
 import Colors from '@dynatrace/strato-design-tokens/colors';
+import track from './data/interlagos.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, lapProfile, deltaToReference } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
 const isLocal = window.location.hostname === 'localhost';
+// O Strato não tem ícone de medalha (conferido: 846 ícones, nenhum serve), e
+// emoji é o que renderiza as três cores de verdade em qualquer plataforma.
+const MEDALHAS = ['🥇', '🥈', '🥉'];
+const medalha = (posicao: number) => MEDALHAS[posicao - 1] ?? null;
+function Posicao({posicao}: {posicao: number}) {
+  const icone = medalha(posicao);
+  return <span className="posicao">{icone && <span className="medalha" aria-hidden="true">{icone}</span>}{String(posicao).padStart(2, '0')}</span>;
+}
+// O delta usa o traçado COMPLETO, não os pontos ralos do desenho: com 467
+// pontos o erro de uma volta contra ela mesma cai de 2,2s para 1,0s.
+const TRACK = track;
 // As três telas do painel. O script local é uma quarta aba só em desenvolvimento:
 // usa a mesma tela do ao vivo, alimentada pelo replay_server em vez do Grail.
 const TABS = [
   {id: 'live', title: 'Ao vivo'},
-  {id: 'history', title: 'Histórico'},
+  {id: 'history', title: 'Placar'},
   {id: 'replay', title: 'Replay'},
   {id: 'stream', title: 'Script local'},
 ];
@@ -97,9 +109,9 @@ const TELEMETRY_REFRESH_MS = 5000;
 // na pista, uma linha no total.
 type Ranked = Telemetry & {position: number};
 const rankColumns: DataTableColumnDef<Ranked>[] = [
-  { id: 'position', header: '#', accessor: 'position', alignment: 'right', minWidth: 55, sortType: 'number', cell: ({rowData}) => <>{String(rowData.position).padStart(2, '0')}</> },
+  { id: 'position', header: '#', accessor: 'position', minWidth: 80, sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
-  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', alignment: 'right', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
@@ -167,10 +179,13 @@ export const Dashboard = () => {
   const replayEnabled = mode === 'replay' && replay !== null;
   const lapBiz = useDql<Telemetry>({ query: replay?.biz ?? QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:replay?.from, defaultTimeframeEnd:replay?.to }, { enabled: replayEnabled });
   const lapOtel = useDql<Telemetry>({ query: replay?.otel ?? QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:replay?.from, defaultTimeframeEnd:replay?.to }, { enabled: replayEnabled });
-  const lapSamples = useMemo(() => replayEnabled
-    ? backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))
-        .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
-    : [], [replayEnabled, lapBiz.data, lapOtel.data]);
+  // A janela buscada tem margem nas duas pontas; o recorte final deixa só a
+  // volta, da largada à largada, para a reprodução não começar com o carro já
+  // andando e o cronômetro da telemetria sair do zero.
+  const lapSamples = useMemo(() => replayEnabled && replayLap
+    ? trimToLap(backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))
+        .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), replayLap.last_lap_s ?? 0)
+    : [], [replayEnabled, replayLap, lapBiz.data, lapOtel.data]);
   // Passo tirado das próprias amostras: reproduz em 1× tanto num rig a 20 Hz
   // quanto a 60 Hz, sem depender da frequência configurada no jogo.
   const replayStep = lapSamples.length > 1
@@ -234,6 +249,31 @@ export const Dashboard = () => {
   const empresas = useMemo(() => companyPodium(ranking, 3), [ranking]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
+  // Volta de referência: a mais rápida do período. As amostras dela viram um
+  // perfil "em cada ponto da pista, quanto tempo o líder já tinha gasto", que é
+  // como as transmissões de F1 montam o delta ao vivo.
+  const referenceLap = ranking[0] ?? null;
+  const reference = useMemo(() => {
+    const janela = referenceLap && lapWindow(referenceLap, LAP_MARGIN_MS);
+    if (!referenceLap || !janela) return null;
+    return {
+      ...janela,
+      biz: LAP_SAMPLES('bizevents', dqlSafe(referenceLap['rig.id']), dqlSafe(referenceLap['session.id'])),
+      otel: LAP_SAMPLES('logs', dqlSafe(referenceLap['rig.id']), dqlSafe(referenceLap['session.id'])),
+      seconds: referenceLap.last_lap_s ?? 0,
+    };
+  }, [referenceLap]);
+  const referenceEnabled = (mode === 'live' || mode === 'replay') && reference !== null;
+  const refBiz = useDql<Telemetry>({ query: reference?.biz ?? QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:reference?.from, defaultTimeframeEnd:reference?.to }, { enabled: referenceEnabled });
+  const refOtel = useDql<Telemetry>({ query: reference?.otel ?? QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:reference?.from, defaultTimeframeEnd:reference?.to }, { enabled: referenceEnabled });
+  const referenceProfile = useMemo(() => {
+    if (!referenceEnabled || !reference) return null;
+    const amostras = trimToLap(mergeTelemetry(parseEvents(refBiz.data?.records), parseEvents(refOtel.data?.records))
+      .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), reference.seconds);
+    return amostras.length ? lapProfile(amostras, TRACK) : null;
+  }, [referenceEnabled, reference, refBiz.data, refOtel.data]);
+  // Delta do carro em foco contra o líder, no ponto em que ele está agora.
+  const delta = referenceProfile && reference ? deltaToReference(focus, referenceProfile, TRACK, reference.seconds) : null;
   const lapLoading = lapBiz.isLoading || lapOtel.isLoading;
   // Ticker próprio: o "sem telemetria há Ns" precisa subir sozinho entre as
   // reexecuções da consulta, que só acontecem a cada 30s.
@@ -288,8 +328,11 @@ export const Dashboard = () => {
 
   const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
     <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="small-tag">{focus?.company_name ?? 'Empresa não informada'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
-    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{subtitulo}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div></section>
+    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{subtitulo}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span><strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong></div></section>
   </div>;
+
+  const podioEmpresas = <><div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
+    <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{empresas[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{empresas[i] ? empresas[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(empresas[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
     <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
@@ -308,15 +351,15 @@ export const Dashboard = () => {
       {painelDoPiloto(mode === 'live' ? 'Última leitura no período' : 'Dados de demonstração')}
     </div>
     {indicadores}
+    {podioEmpresas}
     <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
   </>;
 
   // ---------- Tela 2: histórico ----------
   const telaHistorico = <>
     {liveLaps.error && <div className="notice error" role="alert">Não foi possível consultar as voltas concluídas: {liveLaps.error.message}</div>}
+    {podioEmpresas}
     <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
-    <div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
-    <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place">{String(i+1).padStart(2,'0')}</span><div><strong>{empresas[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{empresas[i] ? empresas[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(empresas[i]?.last_lap_s)}</b></div>)}</section>
   </>;
 
   // ---------- Tela 3: replay ----------

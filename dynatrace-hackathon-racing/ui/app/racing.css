@@ -18,3 +18,13 @@
 .status-dot.beating{animation:beating 1.6s ease-out infinite}
 @keyframes beating{0%{box-shadow:0 0 0 0 #2eb77d55}70%{box-shadow:0 0 0 7px #2eb77d00}100%{box-shadow:0 0 0 0 #2eb77d00}}
 .status-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+
+/* Medalhas das três primeiras posições, na tabela e no pódio de empresas. */
+.posicao{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.medalha{font-size:15px;line-height:1}
+.place .posicao{font-size:28px;font-weight:300;letter-spacing:-1px}
+.place .medalha{font-size:24px}
+
+/* Delta contra a melhor volta, no estilo das transmissões: verde à frente. */
+.delta-ganhando{color:#3ec98a}
+.delta-perdendo{color:#e2717d}

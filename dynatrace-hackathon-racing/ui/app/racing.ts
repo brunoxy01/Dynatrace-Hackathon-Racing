@@ -239,16 +239,78 @@ export function sampleAt(trail: Telemetry[], at: number): Telemetry {
   return trail[low];
 }
 
+// Ponto do traçado mais próximo da amostra, ou -1 se ela estiver longe demais
+// da pista. O corte de distância evita que uma amostra perdida pinte um trecho.
+export function nearestNode(x: number, y: number, nodes: number[][]): number {
+  let best = -1, distance = 35 * 35;
+  for (let i = 0; i < nodes.length; i++) {
+    const d = (nodes[i][0] - x) ** 2 + (nodes[i][1] - y) ** 2;
+    if (d < distance) { distance = d; best = i; }
+  }
+  return best;
+}
+
+// Recorta as amostras para a volta em si: da largada à largada. A janela que
+// busca a volta no Grail tem margem nas duas pontas, então a reprodução
+// começava com o carro já andando, antes da linha. Quem diz onde a volta começa
+// é o cronômetro do próprio jogo: lap_time_s zera ao cruzar a linha e cresce
+// até o tempo da volta. Andamos de trás para frente a partir do fechamento
+// enquanto o cronômetro decresce; ele para de decrescer — ou some, porque o
+// jogo não reportava tempo na volta anterior — exatamente na largada.
+export function trimToLap(samples: Telemetry[], lapSeconds: number): Telemetry[] {
+  // O fim da volta é o quadro de MAIOR cronômetro dentro da duração oficial —
+  // não o último da janela, que já pertence à volta seguinte (cronômetro zerado).
+  let end = -1, maior = -Infinity;
+  for (let i = 0; i < samples.length; i++) {
+    const t = samples[i].lap_time_s;
+    if (finite(t) && t <= lapSeconds + 0.5 && t > maior) { maior = t; end = i; }
+  }
+  if (end < 0) return samples;
+  let start = end;
+  while (start > 0) {
+    const anterior = samples[start - 1].lap_time_s, atual = samples[start].lap_time_s;
+    if (!finite(anterior) || !finite(atual) || anterior > atual) break;
+    start--;
+  }
+  return samples.slice(start, end + 1);
+}
+
+// Perfil da volta de referência: em cada ponto do traçado, o menor tempo de
+// volta já decorrido ali. É o que permite dizer, no meio da volta, se o carro
+// está na frente ou atrás do melhor tempo — o delta das transmissões de F1.
+export function lapProfile(samples: Telemetry[], nodes: number[][]): (number | null)[] {
+  const profile: (number | null)[] = nodes.map(() => null);
+  for (const sample of samples) {
+    if (!finite(sample.pos_x) || !finite(sample.pos_y) || !finite(sample.lap_time_s)) continue;
+    const i = nearestNode(sample.pos_x, sample.pos_y, nodes);
+    if (i < 0) continue;
+    const atual = profile[i];
+    if (atual === null || sample.lap_time_s < atual) profile[i] = sample.lap_time_s;
+  }
+  return profile;
+}
+
+// Diferença para a referência no ponto onde o carro está. Negativo = à frente.
+// Perto da linha o mesmo ponto do traçado é visitado no começo E no fim da
+// volta, e o carro que está fechando casaria com o instante da largada — um
+// delta de uma volta inteira. Diferenças acima de meia volta de referência são
+// isso, não desempenho, e viram "sem comparação" em vez de um número errado.
+export function deltaToReference(sample: Telemetry | undefined, profile: (number | null)[], nodes: number[][], referenceSeconds: number): number | null {
+  if (!sample || !finite(sample.pos_x) || !finite(sample.pos_y) || !finite(sample.lap_time_s)) return null;
+  const i = nearestNode(sample.pos_x, sample.pos_y, nodes);
+  if (i < 0) return null;
+  const referencia = profile[i];
+  if (referencia === null) return null;
+  const delta = sample.lap_time_s - referencia;
+  return Math.abs(delta) > referenceSeconds / 2 ? null : delta;
+}
+
 // Average per track segment. Distance cutoff prevents outliers from coloring the track.
 export function trackHeat(events: Telemetry[], metric: Metric, nodes: number[][]) {
   const bins = nodes.map(() => ({sum:0,count:0}));
   for (const e of events) {
     if (!finite(e.pos_x) || !finite(e.pos_y) || !finite(e[metric])) continue;
-    let best = -1, distance = 35 * 35;
-    for (let i=0; i<nodes.length; i++) {
-      const d = (nodes[i][0]-e.pos_x)**2 + (nodes[i][1]-e.pos_y)**2;
-      if (d < distance) {distance=d;best=i;}
-    }
+    const best = nearestNode(e.pos_x, e.pos_y, nodes);
     if (best >= 0) {bins[best].sum += e[metric];bins[best].count++;}
   }
   return bins.map((bin,i) => {
