@@ -11,7 +11,7 @@ import { Tabs, Tab } from '@dynatrace/strato-components/navigation';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, rankDrivers } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -82,55 +82,28 @@ const dqlSafe = (value: string) => value.replace(/[^A-Za-z0-9._:|-]/g, '');
 // tempo, não o instante exato do cruzamento da linha.
 const LAP_MARGIN_MS = 2000;
 
-// A telemetria recarrega rápido para o mapa acompanhar a pista. As voltas
-// concluídas não precisam: uma volta em Interlagos leva ~100s, e cada ciclo
-// completo custa quatro consultas ao Grail de até 10.000 registros.
+// Só a telemetria do mapa recarrega sozinha — é o que precisa acompanhar a
+// pista. As tabelas de voltas NÃO: recarregar sozinha descartava a ordenação e
+// a página em que a pessoa estava, no meio da leitura. Elas têm botão próprio.
 const TELEMETRY_REFRESH_MS = 5000;
-const LAPS_REFRESH_MS = 30000;
 
 // sortType padrão do DataTable é 'text': sem marcar as colunas numéricas, 10
 // viria antes de 9. Onde o accessor devolve texto formatado (tempos de volta,
 // data), o sortAccessor entrega o valor cru para a ordenação.
-const columns: DataTableColumnDef<Driver>[] = [
-  { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 105 },
-  { id: 'source', header: 'Origem', accessor: row => row.source === 'demo' ? 'Simulado' : row.source === 'replay' ? 'Captura' : 'Telemetria', minWidth: 90 },
-  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 115 },
-  { id: 'car', header: 'Carro utilizado', accessor: row => row.car_name ?? 'Não informado', minWidth: 120 },
-  { id: 'best', header: 'Melhor volta', accessor: 'best', alignment: 'right', minWidth: 110, sortType: 'number', cell: ({rowData}) => <>{lapTime(rowData.best)}</> },
-  { id: 'speed', header: 'km/h', accessor: 'speed_kmh', alignment: 'right', minWidth: 70, sortType: 'number', cell: ({rowData}) => <>{number(rowData.speed_kmh, 1)}</> },
-  { id: 'accel', header: 'Aceleração (g)', accessor: 'acceleration_g', alignment: 'right', minWidth: 120, sortType: 'number', cell: ({rowData}) => <>{number(rowData.acceleration_g, 2)}</> },
-  { id: 'gear', header: 'Marcha', accessor: 'gear', alignment: 'right', minWidth: 80, sortType: 'number' },
-  { id: 'brake', header: 'Freio (%)', accessor: 'brake_pct', alignment: 'right', minWidth: 88, sortType: 'number' },
-  { id: 'position', header: 'Posição X / Y', accessor: row => `${number(row.pos_x, 1)} / ${number(row.pos_y, 1)}`, alignment: 'right', minWidth: 125, disableSorting: true },
-  { id: 'lap', header: 'Volta', accessor: 'lap_number', alignment: 'right', minWidth: 70, sortType: 'number' },
-  { id: 'time', header: 'Tempo atual', accessor: row => lapTime(row.lap_time_s), alignment: 'right', minWidth: 108, sortType: 'number', sortAccessor: row => row.lap_time_s ?? -1 },
-  { id: 'rank', header: 'Posição na corrida', accessor: 'lap_race_position', alignment: 'right', minWidth: 145, sortType: 'number' },
-];
 
-// Uma linha por volta concluída. Sem coluna de número da volta: o `lap_number`
-// do simulador não identifica a volta que fechou — o mesmo tempo persiste por
-// várias voltas e sobrevive ao reinício do coletor. O que identifica a volta é
-// quem a fez, quanto durou e quando terminou.
-const lapColumns: DataTableColumnDef<Telemetry>[] = [
-  { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
-  { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
-  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', alignment: 'right', minWidth: 105, sortType: 'number', cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
-  { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
-  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 130 },
-  // Acessor de função, não a string 'rig.id': a tabela leria o ponto como
-  // caminho aninhado (row.rig.id) e a coluna sairia vazia.
-  { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
-];
 
-// Tela 2: ranking do período, um piloto por linha, melhor tempo primeiro.
+// Ranking do período: uma linha por VOLTA, da mais rápida para a mais lenta.
+// Por piloto, o período inteiro virava uma linha por pessoa — com um piloto só
+// na pista, uma linha no total.
 type Ranked = Telemetry & {position: number};
 const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', alignment: 'right', minWidth: 55, sortType: 'number', cell: ({rowData}) => <>{String(rowData.position).padStart(2, '0')}</> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
-  { id: 'time', header: 'Melhor volta', accessor: 'last_lap_s', alignment: 'right', minWidth: 120, sortType: 'number', cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  { id: 'time', header: 'Tempo', accessor: 'last_lap_s', alignment: 'right', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
+  { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
 ];
 
 // A janela deslizante recalcula o timeframe absoluto a cada 30s. Para o cache do
@@ -161,13 +134,13 @@ export const Dashboard = () => {
   const [queryTime, setQueryTime] = useState(Date.now());
   const [lapsTime, setLapsTime] = useState(Date.now());
   const refresh = () => {setQueryTime(Date.now());setLapsTime(Date.now());};
+  const atualizarVoltas = () => setLapsTime(Date.now());
   const bounds = useMemo(() => ({from:parseTimeAsTimeValue(timeframe.from, queryTime)?.absoluteDate, to:parseTimeAsTimeValue(timeframe.to, queryTime)?.absoluteDate}), [timeframe, queryTime]);
   const lapBounds = useMemo(() => ({from:parseTimeAsTimeValue(timeframe.from, lapsTime)?.absoluteDate, to:parseTimeAsTimeValue(timeframe.to, lapsTime)?.absoluteDate}), [timeframe, lapsTime]);
   useEffect(() => {
     if (mode !== 'live' || timeframe.to !== 'now()') return;
     const telemetria = window.setInterval(() => setQueryTime(Date.now()), TELEMETRY_REFRESH_MS);
-    const voltas = window.setInterval(() => setLapsTime(Date.now()), LAPS_REFRESH_MS);
-    return () => {window.clearInterval(telemetria);window.clearInterval(voltas);};
+    return () => window.clearInterval(telemetria);
   }, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
   const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
@@ -203,13 +176,18 @@ export const Dashboard = () => {
   const replayStep = lapSamples.length > 1
     ? Math.max(20, (Date.parse(lapSamples[lapSamples.length-1].timestamp) - Date.parse(lapSamples[0].timestamp)) / lapSamples.length)
     : 50;
-  useEffect(() => { if (lapSamples.length) { setCursor(0); setPlaying(true); } }, [lapSamples]);
+  // Fim da volta é DERIVADO, não guardado em estado. Quando era um efeito que
+  // chamava setPlaying(false), ele lia o cursor do render anterior: ao escolher
+  // uma segunda volta, o cursor ainda era o do fim da primeira e a reprodução
+  // era pausada no mesmo instante em que começava. A primeira volta rodava, as
+  // seguintes não.
+  const replayEnded = lapSamples.length > 0 && cursor >= lapSamples.length;
+  useEffect(() => { setCursor(0); setPlaying(lapSamples.length > 0); }, [lapSamples]);
   useEffect(() => {
-    if (!playing || mode !== 'replay' || !lapSamples.length) return;
+    if (!playing || replayEnded || mode !== 'replay' || !lapSamples.length) return;
     const timer = window.setInterval(() => setCursor(v => Math.min(lapSamples.length, v + 1)), replayStep);
     return () => window.clearInterval(timer);
-  }, [playing, mode, lapSamples, replayStep]);
-  useEffect(() => { if (mode === 'replay' && lapSamples.length && cursor >= lapSamples.length) setPlaying(false); }, [cursor, mode, lapSamples.length]);
+  }, [playing, replayEnded, mode, lapSamples, replayStep]);
   const janela = `${mode}|${timeframe.from}|${timeframe.to}`;
   const liveData = useUltimoResultado(live.data, janela);
   const liveOtelData = useUltimoResultado(liveOtel.data, janela);
@@ -244,21 +222,16 @@ export const Dashboard = () => {
     .filter(l => filtroEmpresa === 'all' || (l.company_name ?? 'Não informada') === filtroEmpresa)
     .filter(l => filtroRig === 'all' || l['rig.id'] === filtroRig)
     .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroEmpresa, filtroRig]);
-  const ranking = useMemo<Ranked[]>(() => rankDrivers(lapResults).map((d,i) => ({...d, position: i+1})), [lapResults]);
+  const ranking = useMemo<Ranked[]>(() => lapsByTime(lapResults).map((l,i) => ({...l, position: i+1})), [lapResults]);
   const opcoesEmpresa = useMemo(() => [...new Set(lapResults.map(l => l.company_name ?? 'Não informada'))].sort(), [lapResults]);
   const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
   const best = drivers.find(d => d.best !== null);
   const peak = Math.max(0, ...events.map(e => finite(e.speed_kmh) ? e.speed_kmh : 0));
-  // O pódio sai das voltas do período, não da telemetria recente: a janela de
-  // amostras cobre menos de um minuto por rig e quase nunca contém uma volta.
-  const empresas = useMemo(() => {
-    const map = new Map<string, Telemetry>();
-    for (const lap of ranking) if (lap.company_name) {
-      const previous = map.get(lap.company_name);
-      if (!previous || lap.last_lap_s! < previous.last_lap_s!) map.set(lap.company_name, lap);
-    }
-    return [...map.values()].sort((a,b) => a.last_lap_s! - b.last_lap_s!).slice(0,3);
-  }, [ranking]);
+  // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
+  // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
+  // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
+  // de uma. Voltas sem empresa preenchida não entram no pódio.
+  const empresas = useMemo(() => companyPodium(ranking, 3), [ranking]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
   const lapLoading = lapBiz.isLoading || lapOtel.isLoading;
@@ -291,11 +264,16 @@ export const Dashboard = () => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);
     setSelected('all'); setFiltroEmpresa('all'); setFiltroRig('all');
   };
-  // Colunas do replay: a ação de reproduzir vem antes dos dados da volta.
+  // O tempo da volta É o botão: clicar nele reproduz aquela volta. Uma coluna
+  // separada de ação duplicaria o alvo de clique sem dizer nada a mais.
   const replayColumns = useMemo<DataTableColumnDef<Telemetry>[]>(() => [
-    { id: 'play', header: 'Replay', minWidth: 118, disableSorting: true,
-      cell: ({rowData}) => <Button onClick={() => setReplayLap(rowData)}>Reproduzir</Button> },
-    ...lapColumns,
+    { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
+    { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
+    { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
+      cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
+    { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
+    { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 130 },
+    { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   ], []);
   const abas = TABS.filter(t => t.id !== 'stream' || isLocal);
   const abaAtual = Math.max(0, abas.findIndex(t => t.id === mode));
@@ -330,13 +308,13 @@ export const Dashboard = () => {
       {painelDoPiloto(mode === 'live' ? 'Última leitura no período' : 'Dados de demonstração')}
     </div>
     {indicadores}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{drivers.length} {drivers.length === 1 ? 'participação' : 'participações'}</span></div><p className="muted">Quem está na pista agora, pela melhor volta já registrada na sessão.</p><DataTable data={drivers.slice(0,10)} columns={columns} fullWidth sortable loading={mode === 'live' && liveLoading}><DataTable.EmptyState>Esperando os primeiros pilotos entrarem na pista.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
   </>;
 
   // ---------- Tela 2: histórico ----------
   const telaHistorico = <>
     {liveLaps.error && <div className="notice error" role="alert">Não foi possível consultar as voltas concluídas: {liveLaps.error.message}</div>}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 pilotos</Heading></div><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'piloto' : 'pilotos'}</span></div><p className="muted">Ranking pela menor volta válida concluída no período selecionado. Cada piloto aparece uma vez, com o seu melhor tempo.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
     <div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
     <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place">{String(i+1).padStart(2,'0')}</span><div><strong>{empresas[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{empresas[i] ? empresas[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(empresas[i]?.last_lap_s)}</b></div>)}</section>
   </>;
@@ -351,7 +329,7 @@ export const Dashboard = () => {
       {painelDoPiloto('Quadro atual da volta')}
     </div>
     <section className="panel leaderboard">
-      <div className="panel-heading"><div><span className="eyebrow">VOLTAS DO PERÍODO</span><Heading level={2}>Voltas registradas</Heading></div><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span></div>
+      <div className="panel-heading"><div><span className="eyebrow">VOLTAS DO PERÍODO</span><Heading level={2}>Voltas registradas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div>
       <Flex alignItems="center" gap={8} flexWrap="wrap">
         <span className="muted">Filtrar por</span>
         <Select aria-label="Filtrar por piloto" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{lapDrivers.map(l => <Select.Option key={driverKey(l)} value={driverKey(l)}>{l.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>

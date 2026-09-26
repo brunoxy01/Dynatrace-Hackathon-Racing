@@ -183,17 +183,25 @@ export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
   return [...primeira.values()];
 }
 
-// Ranking de pilotos pela melhor volta do período. Sai das voltas concluídas,
-// não da telemetria: a janela de amostras cobre menos de um minuto por rig.
-export function rankDrivers(laps: Telemetry[]): Telemetry[] {
+// O ranking do evento é por VOLTA, não por piloto: um piloto rápido pode ocupar
+// várias posições, e agrupar por piloto reduzia o período inteiro a uma linha
+// por pessoa. Da mais rápida para a mais lenta.
+export function lapsByTime(laps: Telemetry[]): Telemetry[] {
+  return laps
+    .filter(lap => finite(lap.last_lap_s) && lap.last_lap_s > 0)
+    .sort((a,b) => a.last_lap_s! - b.last_lap_s!);
+}
+
+// Pódio de empresas: a volta mais rápida de cada uma. Recebe as voltas já
+// ordenadas por tempo, então a primeira ocorrência de cada empresa já é a
+// melhor dela — sem passar por um "melhor de cada piloto" no meio, que era
+// onde a volta certa se perdia quando o mesmo piloto tinha várias.
+export function companyPodium(lapsSortedByTime: Telemetry[], size: number): Telemetry[] {
   const melhor = new Map<string, Telemetry>();
-  for (const lap of laps) {
-    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0) continue;
-    const key = JSON.stringify([lap['rig.id'], lap.driver_name]);
-    const atual = melhor.get(key);
-    if (!atual || lap.last_lap_s < atual.last_lap_s!) melhor.set(key, lap);
+  for (const lap of lapsSortedByTime) {
+    if (lap.company_name && !melhor.has(lap.company_name)) melhor.set(lap.company_name, lap);
   }
-  return [...melhor.values()].sort((a,b) => a.last_lap_s! - b.last_lap_s!);
+  return [...melhor.values()].slice(0, size);
 }
 
 // Janela de tempo que contém uma volta, para buscar as amostras dela no Grail.
