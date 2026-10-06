@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, topSpeedLocation, lapConsistency } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -28,12 +28,18 @@ function Posicao({posicao}: {posicao: number}) {
 // O delta usa o traçado COMPLETO, não os pontos ralos do desenho: com 467
 // pontos o erro de uma volta contra ela mesma cai de 2,2s para 1,0s.
 const TRACK = track;
-// As três telas do painel. O script local é uma quarta aba só em desenvolvimento:
-// usa a mesma tela do ao vivo, alimentada pelo replay_server em vez do Grail.
+// Mesma resolução (e os mesmos 6 pontos de referência) que o mapa de calor
+// desenha, para os insights da aba Intelligence apontarem um lugar que
+// também está numerado na tela.
+const HEAT_NODES = track.filter((_, i) => i % 3 === 0);
+// As quatro telas do painel. O script local é uma quinta aba só em
+// desenvolvimento: usa a mesma tela do ao vivo, alimentada pelo replay_server
+// em vez do Grail.
 const TABS = [
   {id: 'live', title: 'Ao vivo'},
   {id: 'history', title: 'Placar'},
   {id: 'replay', title: 'Replay'},
+  {id: 'intelligence', title: 'Dynatrace Intelligence'},
   {id: 'stream', title: 'Script local'},
 ];
 const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
@@ -164,7 +170,10 @@ export const Dashboard = () => {
     return () => {window.clearInterval(telemetria); if (voltas !== undefined) window.clearInterval(voltas);};
   }, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
-  const liveEnabled = mode === 'live' && Boolean(bounds.from && bounds.to);
+  // A Dynatrace Intelligence precisa da MESMA telemetria do Ao vivo (posição +
+  // freio + velocidade) para calcular frenagem mais forte e pico de
+  // velocidade — reaproveita a consulta em vez de abrir outra igual.
+  const liveEnabled = (mode === 'live' || mode === 'intelligence') && Boolean(bounds.from && bounds.to);
   // A lista de voltas alimenta tanto o drill down do modo ao vivo quanto a
   // escolha da volta a reproduzir, então vale nos dois modos.
   const periodEnabled = mode !== 'stream' && Boolean(lapBounds.from && lapBounds.to);
@@ -256,6 +265,12 @@ export const Dashboard = () => {
   // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
   // de uma. Voltas sem empresa preenchida não entram no pódio.
   const empresas = useMemo(() => companyPodium(ranking, 3), [ranking]);
+  // Dynatrace Intelligence: três observações calculadas do que já está
+  // carregado (telemetria do período + voltas concluídas), sem consulta nova
+  // ao Grail nem IA externa.
+  const hotspotFrenagem = useMemo(() => brakingHotspot(events, HEAT_NODES), [events]);
+  const picoVelocidade = useMemo(() => topSpeedLocation(events, HEAT_NODES), [events]);
+  const consistencia = useMemo(() => lapConsistency(lapResults), [lapResults]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
   // Volta de referência: a mais rápida do período. As amostras dela viram um
@@ -331,7 +346,7 @@ export const Dashboard = () => {
     <div className="panel-heading"><div><span className="eyebrow">AUTÓDROMO JOSÉ CARLOS PACE</span><Heading level={2}>Interlagos <span className="track-country">BR</span></Heading></div><span className="track-distance">4,295 <small>km</small></span></div>
     <div className="metric-tabs mixed-legend" aria-label="Legenda do mapa combinado"><span><i className="legend-dot speed_kmh"/>Velocidade</span><span><i className="legend-dot brake_pct"/>Frenagem</span><span><i className="legend-dot acceleration_g"/>Aceleração</span></div>
     <TrackMap events={filtered} carName={focus?.car_name} animate={mode === 'live'} />
-    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Azul também é o padrão onde ainda não há dado.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
+    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
     {progresso}
   </section>;
 
@@ -397,7 +412,37 @@ export const Dashboard = () => {
     </section>
   </>;
 
-  const corpo: Record<string, React.ReactNode> = {live: telaAoVivo, stream: telaAoVivo, history: telaHistorico, replay: telaReplay};
+  // ---------- Tela 4: Dynatrace Intelligence ----------
+  // Observações calculadas a partir do que já está carregado (telemetria do
+  // período + voltas concluídas) - sem consulta nova ao Grail, sem IA
+  // externa. Mesma numeração dos pontos de referência já desenhados no mapa.
+  const telaIntelligence = <>
+    {live.error && <div className="notice error" role="alert">Não foi possível consultar a telemetria: {live.error.message}. As observações abaixo podem estar incompletas.</div>}
+    <div className="section-title"><Heading level={2}>Dynatrace Intelligence</Heading><span className="muted">Observações automáticas sobre o período selecionado</span></div>
+    <section className="kpis intelligence-kpis" aria-label="Observações automáticas">
+      <div className="panel kpi">
+        <div><span className="eyebrow">ZONA DE MAIOR FRENAGEM</span><p>Intensidade média de freio por trecho do traçado</p></div>
+        <strong>{hotspotFrenagem ? number(hotspotFrenagem.avgBrakePct,0) : '—'}{hotspotFrenagem && <small>%</small>}</strong>
+        <p className="muted">{hotspotFrenagem ? `Perto do ponto de referência ${String(hotspotFrenagem.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com freio e posição'}</p>
+        <div className="kpi-line blue"/>
+      </div>
+      <div className="panel kpi">
+        <div><span className="eyebrow">PICO DE VELOCIDADE</span><p>Maior leitura válida do período</p></div>
+        <strong>{picoVelocidade ? number(picoVelocidade.speedKmh,1) : '—'}{picoVelocidade && <small>km/h</small>}</strong>
+        <p className="muted">{picoVelocidade ? `Perto do ponto de referência ${String(picoVelocidade.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com velocidade e posição'}</p>
+        <div className="kpi-line purple"/>
+      </div>
+    </section>
+    <section className="panel leaderboard">
+      <div className="panel-heading"><div><span className="eyebrow">CONSISTÊNCIA</span><Heading level={3}>Volta a volta, por piloto</Heading></div></div>
+      <p className="muted">Desvio padrão do tempo de volta de quem completou pelo menos duas voltas no período - menor é mais consistente. Uma volta só não entra: desvio de uma amostra não diz nada.</p>
+      {consistencia.length
+        ? <ul className="consistencia-lista">{consistencia.slice(0,5).map((c,i) => <li key={c.driverName}><Posicao posicao={i+1}/><span className="consistencia-nome">{c.driverName}</span><span className="muted">{c.laps} voltas</span><strong>± {c.stdDevSeconds.toFixed(2)} s</strong></li>)}</ul>
+        : <p className="muted" role="status">Ninguém no período tem duas voltas concluídas ainda - sem isso não há desvio para calcular.</p>}
+    </section>
+  </>;
+
+  const corpo: Record<string, React.ReactNode> = {live: telaAoVivo, stream: telaAoVivo, history: telaHistorico, replay: telaReplay, intelligence: telaIntelligence};
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
@@ -413,7 +458,7 @@ export const Dashboard = () => {
       </div>
       <div className="status-group">
         {mode !== 'stream' && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
-        <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+        <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : mode === 'intelligence' ? `${number(ranking.length)} ${ranking.length === 1 ? 'volta analisada' : 'voltas analisadas'}` : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
         {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
           <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
           {pulse.fresh

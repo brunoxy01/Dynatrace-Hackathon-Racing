@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, topSpeedLocation, lapConsistency } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -192,11 +192,9 @@ test('completed clean lap is derived only at the finish and labeled', () => {
 });
 
 test('mixed map preserves empty areas and distinguishes all three signals', () => {
-  // Sem dado nenhum cai no mesmo "sem total" de um nó parado/sem frear/sem
-  // acelerar: os dois mostram o azul padrão, de propósito - "sem dado" não
-  // deve mais deixar a pista com um buraco cinza, parecendo telemetria
-  // perdida num trecho que só não teve amostra perto o bastante.
-  assert.equal(mixedHeatColor(null,null,null),'rgb(52, 145, 255)');
+  // Rollback a pedido: nó sem dado nenhum volta a ser null/cinza, distinto
+  // de "parado, sem frear, sem acelerar" (que é dado real e continua azul).
+  assert.equal(mixedHeatColor(null,null,null),null);
   assert.equal(mixedHeatColor(0,0,0),'rgb(52, 145, 255)');
   assert.equal(mixedHeatColor(300,0,0),'rgb(52, 145, 255)');
   assert.equal(mixedHeatColor(0,100,0),'rgb(245, 69, 75)');
@@ -395,4 +393,98 @@ test('trackHeat keeps a two-node track behaving like before: no wraparound bridg
   // contornar o círculo — não é uma lacuna cercada por dados DISTINTOS, então
   // o comportamento de sempre (nó sem amostra própria fica cinza) continua.
   assert.deepEqual(trackHeat([sample,{...sample,pos_x:9999}], 'speed_kmh',[[0,0],[100,100]]),[100,null]);
+});
+
+test('two simulators streaming at the same time both show up as independent cars', () => {
+  // O evento precisa disto de verdade: quando a telemetria de dois rigs
+  // comecar a bater ao mesmo tempo, os dois pilotos tem que aparecer na
+  // pista. Simula exatamente o que CarMarkers faz: agrupa por trilha, acha a
+  // janela [oldest,newest] do bloco inteiro e amostra cada carro nela.
+  const rigA = [0,1,2].map(s => ({...sample, 'rig.id':'rig-01', 'session.id':'sessao-a',
+    driver_name:'Bruno', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:s, pos_y:0}));
+  const rigB = [0,1,2].map(s => ({...sample, 'rig.id':'rig-02', 'session.id':'sessao-b',
+    driver_name:'Agnes', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:100+s, pos_y:0}));
+  const paths = trails([...rigA, ...rigB]);
+  assert.equal(paths.length, 2, 'dois rigs concorrentes têm que virar duas trilhas, não uma só');
+
+  const oldest = Math.min(...paths.map(t => Date.parse(t[0].timestamp)));
+  const newest = Math.max(...paths.map(t => Date.parse(t[t.length-1].timestamp)));
+  const posicoes = paths.map(trail => sampleAt(trail, newest).pos_x).sort((a,b) => a-b);
+  assert.deepEqual(posicoes, [2, 102], 'cada carro aparece na SUA própria posição mais recente, não na do outro');
+});
+
+test('a rig lagging behind another still renders at its own latest known position', () => {
+  // Um rig pode ficar alguns segundos atrás do outro por latência de rede —
+  // o relógio compartilhado (newest do bloco inteiro) não pode fazer o carro
+  // atrasado desaparecer nem pular pra uma posição que ele nunca reportou.
+  const adiantado = [0,1,2,3,4].map(s => ({...sample, 'rig.id':'rig-01', 'session.id':'a',
+    timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:s, pos_y:0}));
+  const atrasado = [0,1].map(s => ({...sample, 'rig.id':'rig-02', 'session.id':'b',
+    timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:200+s, pos_y:0}));
+  const paths = trails([...adiantado, ...atrasado]);
+  const newest = Math.max(...paths.map(t => Date.parse(t[t.length-1].timestamp))); // t=4, do rig adiantado
+  const porRig = Object.fromEntries(paths.map(trail => [trail[0]['rig.id'], sampleAt(trail, newest).pos_x]));
+  assert.equal(porRig['rig-01'], 4);   // acompanha o relógio até onde tem dado
+  assert.equal(porRig['rig-02'], 201); // fica na ÚLTIMA posição real dele, não pula nem desaparece
+});
+
+// -------------------- Dynatrace Intelligence --------------------
+
+test('nearestReferencePoint wraps around the circular track', () => {
+  const n = 156;
+  // ponto 1 fica em floor(0.12*156)=18; indice 0 (a largada) é mais perto do
+  // ponto 6 (floor(0.89*156)=138, distância circular 156-138=18) do que do 1
+  // (distância 18 também) — empate resolvido pelo primeiro encontrado (ponto 1).
+  assert.equal(nearestReferencePoint(18, n), 1);
+  assert.equal(nearestReferencePoint(138, n), 6);
+  assert.equal(nearestReferencePoint(0, n), 1); // distância 18 para o 1, 18 para o 6: fica com o 1 (primeiro)
+});
+
+test('brakingHotspot finds the node with the strongest average braking', () => {
+  const nodes = [[0,0],[50,0],[100,0]];
+  const evento = (i, brake) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], brake_pct: brake});
+  const resultado = brakingHotspot([evento(0,20), evento(1,90), evento(1,80), evento(2,10)], nodes);
+  assert.equal(resultado.avgBrakePct, 85); // média do nó 1: (90+80)/2
+  assert.equal(resultado.referencePoint, nearestReferencePoint(1, nodes.length));
+});
+
+test('brakingHotspot returns null without any usable sample', () => {
+  const nodes = [[0,0],[50,0]];
+  assert.equal(brakingHotspot([{...sample, brake_pct:null}], nodes), null);
+  assert.equal(brakingHotspot([{...sample, pos_x:null}], nodes), null);
+});
+
+test('topSpeedLocation picks the single fastest valid sample, ignoring invalid ones', () => {
+  const nodes = [[0,0],[50,0]];
+  const resultado = topSpeedLocation([
+    {...sample, pos_x:0, pos_y:0, speed_kmh:120},
+    {...sample, pos_x:50, pos_y:0, speed_kmh:310},
+    {...sample, pos_x:50, pos_y:0, speed_kmh:null},
+  ], nodes);
+  assert.equal(resultado.speedKmh, 310);
+  assert.equal(resultado.referencePoint, nearestReferencePoint(1, nodes.length));
+});
+
+test('lapConsistency ranks drivers by standard deviation, drops single-lap drivers', () => {
+  const lap = (driver, t) => ({...sample, driver_name: driver, last_lap_s: t, lap_invalidated: false});
+  const resultado = lapConsistency([
+    lap('Constante', 100), lap('Constante', 100.2), lap('Constante', 99.9),
+    lap('Inconsistente', 90), lap('Inconsistente', 110),
+    lap('UmaSoVolta', 95),
+  ]);
+  assert.deepEqual(resultado.map(r => r.driverName), ['Constante', 'Inconsistente']);
+  assert.equal(resultado[0].laps, 3);
+  assert.ok(resultado[0].stdDevSeconds < resultado[1].stdDevSeconds);
+});
+
+test('lapConsistency ignores laps without a usable time or driver name', () => {
+  const lap = (driver, t) => ({...sample, driver_name: driver, last_lap_s: t, lap_invalidated: false});
+  const resultado = lapConsistency([
+    lap(null, 100), lap(null, 101),
+    lap('Piloto', 0), lap('Piloto', -5),
+    lap('Piloto', 100), lap('Piloto', 101),
+  ]);
+  assert.equal(resultado.length, 1);
+  assert.equal(resultado[0].driverName, 'Piloto');
+  assert.equal(resultado[0].laps, 2);
 });

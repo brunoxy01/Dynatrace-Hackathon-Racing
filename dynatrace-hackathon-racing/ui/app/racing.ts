@@ -397,18 +397,98 @@ export function heatColor(value: number, max: number) {
 
 // Normalized contributions, with braking emphasized. No physical unit for this composite.
 //
-// Um nó sem dado nenhum cai no mesmo "sem total" de um nó com dado real mas
-// zerado (parado, sem frear, sem acelerar) — e os dois mostram o azul padrão
-// de propósito. Antes "sem dado" virava null e a pista ficava cinza ali, dando
-// a impressão de telemetria perdida/quebrada num trecho que só não tinha
-// amostra o bastante perto. Azul por padrão não distingue "sem dado" de
-// "parado", mas evita o visual de erro — e o resto do traçado continua
-// mostrando a cor real onde há dado.
-export function mixedHeatColor(speed: number | null, brake: number | null, acceleration: number | null): string {
+// Rollback a pedido (v1.4.4 tinha trocado "sem dado" por azul padrão, pra não
+// dar impressão de telemetria perdida). Nó sem amostra nenhuma volta a ser
+// null -> cinza no mapa, distinguível de "parado, sem frear, sem acelerar"
+// (que continua azul, via o "sem total" abaixo).
+export function mixedHeatColor(speed: number | null, brake: number | null, acceleration: number | null): string | null {
+  if (speed === null && brake === null && acceleration === null) return null;
   const weights = [Math.max(0, brake ?? 0) / 35, Math.max(0, acceleration ?? 0) / 3.5, Math.max(0, speed ?? 0) / 320].map(v => v ** 3);
   const total = weights.reduce((a,b) => a+b,0);
   if (!total) return 'rgb(52, 145, 255)';
   const palette = [[245,69,75],[51,220,125],[52,145,255]];
   const channels = [0,1,2].map(channel => Math.round(weights.reduce((sum,w,i) => sum + w * palette[i][channel],0) / total));
   return `rgb(${channels.join(', ')})`;
+}
+
+// ---------------------------------------------------------------------------
+// Dynatrace Intelligence: observações automáticas calculadas a partir do que
+// o app já tem carregado (telemetria do período + voltas concluídas), sem
+// nenhuma consulta nova ao Grail nem dependência de IA externa. Reaproveita a
+// mesma numeração dos 6 pontos de referência já desenhados no mapa, para quem
+// ler o insight conseguir achar o lugar.
+// ---------------------------------------------------------------------------
+
+const REFERENCE_FRACTIONS = [0.12, 0.28, 0.43, 0.59, 0.73, 0.89];
+
+// Ponto de referência (1..6, mesmo rótulo do mapa) mais próximo de um índice
+// de nó, contando o traçado como um círculo (o ponto 1 fica perto do fim e do
+// começo do array ao mesmo tempo).
+export function nearestReferencePoint(nodeIndex: number, nodeCount: number): number {
+  let best = 0, bestDist = Infinity;
+  REFERENCE_FRACTIONS.forEach((fraction, i) => {
+    const ref = Math.floor(fraction * nodeCount);
+    const direct = Math.abs(ref - nodeIndex);
+    const distance = Math.min(direct, nodeCount - direct);
+    if (distance < bestDist) { bestDist = distance; best = i; }
+  });
+  return best + 1;
+}
+
+export interface BrakingHotspot { referencePoint: number; avgBrakePct: number; }
+
+// Trecho do traçado com a frenagem média mais forte no período. Mesmo binning
+// por nó mais próximo do trackHeat, só que isolado na métrica de freio.
+export function brakingHotspot(events: Telemetry[], nodes: number[][]): BrakingHotspot | null {
+  const bins = nodes.map(() => ({ sum: 0, count: 0 }));
+  for (const e of events) {
+    if (!finite(e.pos_x) || !finite(e.pos_y) || !finite(e.brake_pct)) continue;
+    const i = nearestNode(e.pos_x, e.pos_y, nodes);
+    if (i >= 0) { bins[i].sum += e.brake_pct; bins[i].count++; }
+  }
+  let best = -1, bestAvg = -Infinity;
+  bins.forEach((bin, i) => {
+    if (!bin.count) return;
+    const avg = bin.sum / bin.count;
+    if (avg > bestAvg) { bestAvg = avg; best = i; }
+  });
+  return best < 0 ? null : { referencePoint: nearestReferencePoint(best, nodes.length), avgBrakePct: bestAvg };
+}
+
+export interface TopSpeed { speedKmh: number; referencePoint: number; }
+
+// Maior velocidade válida do período (já passou pelo corte de teletransporte
+// em parseEvents) e o ponto de referência mais próximo de onde ocorreu.
+export function topSpeedLocation(events: Telemetry[], nodes: number[][]): TopSpeed | null {
+  let best: Telemetry | null = null;
+  for (const e of events) {
+    if (!finite(e.speed_kmh) || !finite(e.pos_x) || !finite(e.pos_y)) continue;
+    if (!best || e.speed_kmh > best.speed_kmh!) best = e;
+  }
+  if (!best) return null;
+  const i = nearestNode(best.pos_x!, best.pos_y!, nodes);
+  return i < 0 ? null : { speedKmh: best.speed_kmh!, referencePoint: nearestReferencePoint(i, nodes.length) };
+}
+
+export interface LapConsistency { driverName: string; stdDevSeconds: number; laps: number; }
+
+// Desvio padrão do tempo de volta por piloto, menor primeiro (mais
+// consistente). Exige pelo menos 2 voltas no período — desvio de uma volta só
+// não diz nada. Agrupa por nome, não por sessão: o ponto é "este piloto",
+// atravessando reinícios do coletor, igual ao applyLapResults.
+export function lapConsistency(laps: Telemetry[]): LapConsistency[] {
+  const byDriver = new Map<string, number[]>();
+  for (const lap of laps) {
+    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0 || !lap.driver_name) continue;
+    const times = byDriver.get(lap.driver_name);
+    if (times) times.push(lap.last_lap_s); else byDriver.set(lap.driver_name, [lap.last_lap_s]);
+  }
+  const result: LapConsistency[] = [];
+  for (const [driverName, times] of byDriver) {
+    if (times.length < 2) continue;
+    const mean = times.reduce((a, b) => a + b, 0) / times.length;
+    const variance = times.reduce((a, b) => a + (b - mean) ** 2, 0) / times.length;
+    result.push({ driverName, stdDevSeconds: Math.sqrt(variance), laps: times.length });
+  }
+  return result.sort((a, b) => a.stdDevSeconds - b.stdDevSeconds);
 }
