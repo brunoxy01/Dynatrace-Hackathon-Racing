@@ -267,8 +267,11 @@ export function sampleAt(trail: Telemetry[], at: number): Telemetry {
 
 // Ponto do traçado mais próximo da amostra, ou -1 se ela estiver longe demais
 // da pista. O corte de distância evita que uma amostra perdida pinte um trecho.
+// Os nós (a cada 3 pontos do traçado) ficam ~27m um do outro em mediana; um
+// corte de 45 dá folga pra racing line real desviar um pouco da referência
+// sem deixar de contar, sem abrir mão de rejeitar amostra fora da pista.
 export function nearestNode(x: number, y: number, nodes: number[][]): number {
-  let best = -1, distance = 35 * 35;
+  let best = -1, distance = 45 * 45;
   for (let i = 0; i < nodes.length; i++) {
     const d = (nodes[i][0] - x) ** 2 + (nodes[i][1] - y) ** 2;
     if (d < distance) { distance = d; best = i; }
@@ -335,18 +338,25 @@ export function deltaToReference(sample: Telemetry | undefined, profile: (number
 //
 // Uma volta só raramente acerta TODOS os 156 nós do traçado: em retas rápidas
 // as amostras ficam mais espaçadas entre si, e a linha realmente percorrida
-// nem sempre passa a 35 unidades do nó de referência. Isso deixava buracos
-// cinza espalhados pelo mapa mesmo em trechos cercados de dados reais dos dois
+// nem sempre passa perto do nó de referência. Isso deixava buracos cinza
+// espalhados pelo mapa mesmo em trechos cercados de dados reais dos dois
 // lados — no "ao vivo"/"histórico" o problema se disfarça porque muitas voltas
 // diferentes acabam cobrindo o traçado inteiro ao longo do tempo, mas numa
 // única volta reproduzida (replay) os buracos aparecem.
 //
 // Um nó sem amostra própria agora herda, por interpolação, o valor dos nós
 // vizinhos coloridos MAIS PRÓXIMOS nos dois sentidos — só quando os dois lados
-// têm dado real dentro de MAX_GAP nós (~27m). Isso preenche lacunas pequenas
-// sem inventar cor para trechos genuinamente não visitados (ex.: pit lane) nem
-// deixar uma amostra isolada "pintar" o lado oposto do traçado.
-const MAX_GAP_NODES = 3;
+// têm dado real dentro de MAX_GAP nós (~135-175m, nós a ~27-35m de distância
+// entre si). Isso preenche lacunas pequenas sem inventar cor para trechos
+// genuinamente não visitados nem deixar uma amostra isolada "pintar" o lado
+// oposto do traçado.
+//
+// IMPORTANTE: medido contra uma volta real da captura, um SETOR inteiro pode
+// ficar sem nenhuma amostra perto (ex.: ~900m/34 nós seguidos, quando a volta
+// gravada termina antes de voltar à linha) — nenhum MAX_GAP razoável deveria
+// bridgear isso, seria inventar dado para um quarto da pista. Esse cinza é
+// esperado e correto, não um bug a perseguir aumentando o limite.
+const MAX_GAP_NODES = 5;
 export function trackHeat(events: Telemetry[], metric: Metric, nodes: number[][]) {
   const bins = nodes.map(() => ({sum:0,count:0}));
   for (const e of events) {

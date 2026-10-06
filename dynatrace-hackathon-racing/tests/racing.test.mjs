@@ -374,13 +374,15 @@ test('trackHeat bridges a short gap flanked by real data on both sides', () => {
 });
 
 test('trackHeat never bridges a gap wider than the tolerance, even with data on both ends', () => {
-  const nodes = Array.from({length: 10}, (_, i) => [i * 10, 0]);
+  const nodes = Array.from({length: 16}, (_, i) => [i * 10, 0]);
   const evento = (i, valor) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], speed_kmh: valor});
-  // nós 0 e 9 coloridos, nós 1..8 (lacuna de 8, bem maior que o limite de 3
-  // nós) devem TODOS continuar cinza — nenhum ponto no meio tem dado real
-  // perto o bastante dos dois lados.
-  const resultado = trackHeat([evento(0,100), evento(9,200)], 'speed_kmh', nodes);
-  for (let i = 1; i <= 8; i++) assert.equal(resultado[i], null, `nó ${i} deveria continuar cinza`);
+  // nós 0 e 13 coloridos, nós 1..12 (lacuna de 12 nós, maior que 2x o limite
+  // de 5) devem TODOS continuar cinza — nenhum ponto no meio tem dado real
+  // perto o bastante dos dois lados. É este caso real que a captura expõe: um
+  // setor inteiro sem amostra nenhuma perto, e nenhum MAX_GAP razoável deveria
+  // bridgear isso.
+  const resultado = trackHeat([evento(0,100), evento(13,200)], 'speed_kmh', nodes);
+  for (let i = 1; i <= 12; i++) assert.equal(resultado[i], null, `nó ${i} deveria continuar cinza`);
 });
 
 test('trackHeat keeps a two-node track behaving like before: no wraparound bridging', () => {
