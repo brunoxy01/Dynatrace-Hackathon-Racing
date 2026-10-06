@@ -76,16 +76,29 @@ export function mergeTelemetry(...sources: Telemetry[][]): Telemetry[] {
 // amostras/s por rig isso é menos de um minuto, e a transição de volta quase
 // nunca cai nessa janela. Sem isto o pódio fica vazio mesmo com voltas feitas.
 export function applyLapResults(drivers: Driver[], laps: Telemetry[]): Driver[] {
-  const best = new Map<string, number>();
+  const bySession = new Map<string, number>();
+  // Mesmo rig + mesmo nome de piloto sobrevive a um reinício de sessão. Sem
+  // isto, uma volta cuja linha representativa (após o dedupeLaps) ficou numa
+  // sessão ANTERIOR nunca encontrava o piloto que está ao vivo agora numa
+  // sessão nova — e "melhor volta registrada" e "piloto em destaque" ficavam
+  // em branco mesmo com a volta certinha na tabela de classificação.
+  const byDriver = new Map<string, number>();
   for (const lap of laps) {
     if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0) continue;
-    const key = driverKey(lap);
-    const atual = best.get(key);
-    if (atual === undefined || lap.last_lap_s < atual) best.set(key, lap.last_lap_s);
+    const sessionKey = driverKey(lap);
+    const atualSessao = bySession.get(sessionKey);
+    if (atualSessao === undefined || lap.last_lap_s < atualSessao) bySession.set(sessionKey, lap.last_lap_s);
+    if (lap.driver_name) {
+      const nameKey = JSON.stringify([lap['rig.id'], lap.driver_name]);
+      const atualPiloto = byDriver.get(nameKey);
+      if (atualPiloto === undefined || lap.last_lap_s < atualPiloto) byDriver.set(nameKey, lap.last_lap_s);
+    }
   }
-  if (!best.size) return drivers;
+  if (!bySession.size && !byDriver.size) return drivers;
   return drivers.map(driver => {
-    const registrada = best.get(driver.key);
+    const porSessao = bySession.get(driver.key);
+    const porPiloto = driver.driver_name ? byDriver.get(JSON.stringify([driver['rig.id'], driver.driver_name])) : undefined;
+    const registrada = porSessao === undefined ? porPiloto : porPiloto === undefined ? porSessao : Math.min(porSessao, porPiloto);
     if (registrada === undefined) return driver;
     // O tempo informado pelo simulador continua tendo prioridade quando existe.
     if (driver.bestSource === 'simulator' && finite(driver.best) && driver.best <= registrada) return driver;
@@ -319,6 +332,21 @@ export function deltaToReference(sample: Telemetry | undefined, profile: (number
 }
 
 // Average per track segment. Distance cutoff prevents outliers from coloring the track.
+//
+// Uma volta só raramente acerta TODOS os 156 nós do traçado: em retas rápidas
+// as amostras ficam mais espaçadas entre si, e a linha realmente percorrida
+// nem sempre passa a 35 unidades do nó de referência. Isso deixava buracos
+// cinza espalhados pelo mapa mesmo em trechos cercados de dados reais dos dois
+// lados — no "ao vivo"/"histórico" o problema se disfarça porque muitas voltas
+// diferentes acabam cobrindo o traçado inteiro ao longo do tempo, mas numa
+// única volta reproduzida (replay) os buracos aparecem.
+//
+// Um nó sem amostra própria agora herda, por interpolação, o valor dos nós
+// vizinhos coloridos MAIS PRÓXIMOS nos dois sentidos — só quando os dois lados
+// têm dado real dentro de MAX_GAP nós (~27m). Isso preenche lacunas pequenas
+// sem inventar cor para trechos genuinamente não visitados (ex.: pit lane) nem
+// deixar uma amostra isolada "pintar" o lado oposto do traçado.
+const MAX_GAP_NODES = 3;
 export function trackHeat(events: Telemetry[], metric: Metric, nodes: number[][]) {
   const bins = nodes.map(() => ({sum:0,count:0}));
   for (const e of events) {
@@ -326,14 +354,30 @@ export function trackHeat(events: Telemetry[], metric: Metric, nodes: number[][]
     const best = nearestNode(e.pos_x, e.pos_y, nodes);
     if (best >= 0) {bins[best].sum += e[metric];bins[best].count++;}
   }
-  return bins.map((bin,i) => {
-    if (!bin.count) return null;
-    let sum=0, weight=0;
-    for (let offset=-2;offset<=2;offset++) {
-      const neighbor = bins[(i+offset+bins.length*2)%bins.length];
-      if (neighbor.count) { const w=3-Math.abs(offset);sum+=neighbor.sum/neighbor.count*w;weight+=w; }
+  const n = bins.length;
+  const measured: (number | null)[] = bins.map(bin => bin.count ? bin.sum / bin.count : null);
+  const filled = measured.slice();
+  for (let i = 0; i < n; i++) {
+    if (filled[i] !== null) continue;
+    let leftIdx = -1, leftDist = -1;
+    for (let d = 1; d <= MAX_GAP_NODES; d++) { const idx = (i - d + n * 2) % n; if (measured[idx] !== null) { leftIdx = idx; leftDist = d; break; } }
+    let rightIdx = -1, rightDist = -1;
+    for (let d = 1; d <= MAX_GAP_NODES; d++) { const idx = (i + d) % n; if (measured[idx] !== null) { rightIdx = idx; rightDist = d; break; } }
+    // Precisa de dado real nos DOIS sentidos, em nós DISTINTOS — num traçado
+    // minúsculo (ou nos testes), "os dois lados" podem acabar sendo o mesmo
+    // único nó alcançado nas duas direções, o que não é uma lacuna cercada.
+    if (leftIdx < 0 || rightIdx < 0 || leftIdx === rightIdx) continue;
+    const total = leftDist + rightDist;
+    filled[i] = (measured[leftIdx]! * rightDist + measured[rightIdx]! * leftDist) / total;
+  }
+  return filled.map((value, i) => {
+    if (value === null) return null;
+    let sum = 0, weight = 0;
+    for (let offset = -2; offset <= 2; offset++) {
+      const neighbor = filled[(i + offset + n * 2) % n];
+      if (neighbor !== null) { const w = 3 - Math.abs(offset); sum += neighbor * w; weight += w; }
     }
-    return sum/weight;
+    return sum / weight;
   });
 }
 export function heatColor(value: number, max: number) {

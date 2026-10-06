@@ -59,7 +59,17 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
   return <>{paths.map(trail => {
     const car = sampleAt(trail, at);
     const point = project(car.pos_x!, car.pos_y!);
-    return <g key={driverKey(car)} className="car-marker" transform={`translate(${point.x},${point.y})`}><circle className="marker-halo" r="12" fill="#1496ff" opacity=".18"/><circle r="5.5" fill="#fff" stroke="#172936" strokeWidth="2"/><title>{car.driver_name ?? 'Piloto'} · {car.company_name ?? 'Sem empresa'} · {number(car.speed_kmh,1)} km/h</title></g>;
+    // Mesma convenção do avatar do piloto em destaque: duas primeiras letras
+    // do nome, maiúsculas (Plínio -> PL, Bruno -> BR). Sem nome ainda (os
+    // primeiros ~27s da sessão, antes do pacote de identidade chegar), o
+    // marcador fica só com a bolinha branca, sem texto.
+    const iniciais = car.driver_name?.slice(0,2).toUpperCase();
+    return <g key={driverKey(car)} className="car-marker" transform={`translate(${point.x},${point.y})`}>
+      <circle className="marker-halo" r="12" fill="#1496ff" opacity=".18"/>
+      <circle r={iniciais ? 10 : 5.5} fill="#fff" stroke="#172936" strokeWidth="2"/>
+      {iniciais && <text textAnchor="middle" dominantBaseline="central" fontSize="8.5" fontWeight="700" fill="#172936">{iniciais}</text>}
+      <title>{car.driver_name ?? 'Piloto'} · {car.company_name ?? 'Sem empresa'} · {number(car.speed_kmh,1)} km/h</title>
+    </g>;
   })}</>;
 }
 

@@ -330,3 +330,62 @@ test('startsAtLine needs a real timer reading', () => {
   assert.equal(startsAtLine([]), false);
   assert.equal(startsAtLine([{...sample, lap_time_s:null}]), false);
 });
+
+test('a lap recorded under an earlier session still counts as the current driver\'s best', () => {
+  // dedupeLaps mantém a OCORRÊNCIA MAIS ANTIGA de uma volta: se o piloto
+  // reiniciou a sessão depois de bater aquele tempo, a linha da volta aponta
+  // para a sessão velha, não para a sessão ao vivo agora.
+  const voltaNaSessaoVelha = {...sample, 'session.id':'sessao-antiga', last_lap_s:101};
+  const pilotoNaSessaoNova = summarize([{...sample, 'session.id':'sessao-nova'}]);
+  assert.equal(pilotoNaSessaoNova[0].best, null);
+  const comResultado = applyLapResults(pilotoNaSessaoNova, [voltaNaSessaoVelha]);
+  assert.equal(comResultado[0].best, 101);
+  assert.equal(comResultado[0].bestSource, 'completed');
+});
+
+test('matching by driver name never merges two different rigs or a renamed driver', () => {
+  const doisRigs = summarize([
+    {...sample, 'rig.id':'rig-01', 'session.id':'nova-1'},
+    {...sample, 'rig.id':'rig-02', 'session.id':'nova-2'},
+  ]);
+  const comVoltas = applyLapResults(doisRigs, [
+    {...sample, 'rig.id':'rig-01', 'session.id':'velha-1', last_lap_s:90},
+    // mesmo rig.id, nome diferente: nao e' o mesmo piloto, nao deve casar
+    {...sample, 'rig.id':'rig-02', 'session.id':'velha-2', driver_name:'Outro', last_lap_s:70},
+  ]);
+  const porRig = Object.fromEntries(comVoltas.map(d => [d['rig.id'], d.best]));
+  assert.equal(porRig['rig-01'], 90);
+  assert.equal(porRig['rig-02'], null);
+});
+
+test('trackHeat bridges a short gap flanked by real data on both sides', () => {
+  // Nós em linha, bem afastados entre si (e um array grande o bastante para o
+  // outro lado do círculo não "vazar" por perto): a posição de cada evento é
+  // colocada EXATAMENTE sobre o nó-alvo, então a distância de corte do
+  // nearestNode não interfere — isola só a lógica de preenchimento de lacuna.
+  const nodes = Array.from({length: 12}, (_, i) => [i * 10, 0]);
+  const evento = (i, valor) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], speed_kmh: valor});
+  // nó 1 fica sem amostra própria, entre o nó 0 (100) e o nó 2 (200)
+  const resultado = trackHeat([evento(0,100), evento(2,200)], 'speed_kmh', nodes);
+  assert.equal(resultado[1], 150); // (100*1 + 200*1) / 2, distancia 1 dos dois lados
+  // um nó do lado oposto do círculo, sem NENHUM dado real por perto nos dois
+  // sentidos (mais de MAX_GAP_NODES em qualquer direção), continua cinza
+  assert.equal(resultado[6], null);
+});
+
+test('trackHeat never bridges a gap wider than the tolerance, even with data on both ends', () => {
+  const nodes = Array.from({length: 10}, (_, i) => [i * 10, 0]);
+  const evento = (i, valor) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], speed_kmh: valor});
+  // nós 0 e 9 coloridos, nós 1..8 (lacuna de 8, bem maior que o limite de 3
+  // nós) devem TODOS continuar cinza — nenhum ponto no meio tem dado real
+  // perto o bastante dos dois lados.
+  const resultado = trackHeat([evento(0,100), evento(9,200)], 'speed_kmh', nodes);
+  for (let i = 1; i <= 8; i++) assert.equal(resultado[i], null, `nó ${i} deveria continuar cinza`);
+});
+
+test('trackHeat keeps a two-node track behaving like before: no wraparound bridging', () => {
+  // Com só 2 nós, "os dois lados" do nó sem dado caem no MESMO nó ao
+  // contornar o círculo — não é uma lacuna cercada por dados DISTINTOS, então
+  // o comportamento de sempre (nó sem amostra própria fica cinza) continua.
+  assert.deepEqual(trackHeat([sample,{...sample,pos_x:9999}], 'speed_kmh',[[0,0],[100,100]]),[100,null]);
+});

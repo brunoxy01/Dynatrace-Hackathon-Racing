@@ -39,7 +39,13 @@
 .track-panel progress {accent-color:var(--racing-purple);}
 .notice {border-color:var(--dt-colors-border-primary-default);background:var(--dt-colors-background-container-primary-default);border-radius:var(--dt-borders-radius-container-default);}
 .notice.error {border-color:var(--dt-colors-border-critical-default);background:var(--dt-colors-background-container-critical-default);}
-.car-marker {transition:transform var(--dt-animations-slide-in-duration-fast) linear;}
+/* 48ms, não um token de design: a bolinha anda a cada 50ms (PLAYBACK_STEP_MS
+   no TrackMap / passo do replay no Dashboard). Um token de ~200ms é 4x mais
+   lento que o intervalo entre atualizações de posição — cada posição nova
+   interrompia a transição anterior antes dela terminar, e o carro parecia
+   pular em vez de deslizar. Esta regra ganha de racing.css por vir depois no
+   import (mesma especificidade), então é aqui que o valor efetivo mora. */
+.car-marker {transition:transform 48ms linear;}
 @media(max-width:1080px){.racing-app{padding:var(--dt-spacings-size-24)}.hero-grid{gap:var(--dt-spacings-size-16)}}
 @media(max-width:780px){.racing-app,.leaderboard{padding:var(--dt-spacings-size-16)}.identity h1{font-size:var(--dt-typography-heading-level-3-size)!important}}
 @media(prefers-reduced-motion:reduce){.metric-legend,.car-marker{transition:none}}

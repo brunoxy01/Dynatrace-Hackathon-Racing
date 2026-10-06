@@ -23,7 +23,7 @@ const MEDALHAS = ['🥇', '🥈', '🥉'];
 const medalha = (posicao: number) => MEDALHAS[posicao - 1] ?? null;
 function Posicao({posicao}: {posicao: number}) {
   const icone = medalha(posicao);
-  return <span className="posicao">{icone && <span className="medalha" aria-hidden="true">{icone}</span>}{String(posicao).padStart(2, '0')}</span>;
+  return <span className={`posicao${icone ? ` posicao-${posicao}` : ''}`}>{icone && <span className="medalha" aria-hidden="true">{icone}</span>}{String(posicao).padStart(2, '0')}</span>;
 }
 // O delta usa o traçado COMPLETO, não os pontos ralos do desenho: com 467
 // pontos o erro de uma volta contra ela mesma cai de 2,2s para 1,0s.
@@ -113,7 +113,7 @@ const LAPS_REFRESH_MS = 15000;
 // na pista, uma linha no total.
 type Ranked = Telemetry & {position: number};
 const rankColumns: DataTableColumnDef<Ranked>[] = [
-  { id: 'position', header: '#', accessor: 'position', minWidth: 80, sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
+  { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
@@ -250,7 +250,6 @@ export const Dashboard = () => {
   const ranking = useMemo<Ranked[]>(() => lapsByTime(lapResults).map((l,i) => ({...l, position: i+1})), [lapResults]);
   const opcoesEmpresa = useMemo(() => [...new Set(lapResults.map(l => l.company_name ?? 'Não informada'))].sort(), [lapResults]);
   const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
-  const best = drivers.find(d => d.best !== null);
   const peak = Math.max(0, ...events.map(e => finite(e.speed_kmh) ? e.speed_kmh : 0));
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
@@ -346,7 +345,11 @@ export const Dashboard = () => {
 
   const indicadores = <section className="kpis">
     <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
-    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{best ? `${best.driver_name} · ${best.bestSource === 'simulator' ? 'informada pelo simulador' : 'calculada das voltas concluídas'}` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(best?.best)}</strong><div className="kpi-line purple"/></div>
+    {/* A volta mais rápida do PERÍODO, não "a mais rápida entre quem está com
+        telemetria ao vivo agora": referenceLap já é o #1 do ranking (mesma
+        fonte da tabela abaixo), então o KPI não depende de o piloto recorde
+        ainda estar streaming neste exato instante. */}
+    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{referenceLap ? `${referenceLap.driver_name ?? 'Piloto sem nome'} · calculada das voltas concluídas` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(referenceLap?.last_lap_s)}</strong><div className="kpi-line purple"/></div>
   </section>;
 
   // ---------- Tela 1: ao vivo (e o script local, que é a mesma tela) ----------
