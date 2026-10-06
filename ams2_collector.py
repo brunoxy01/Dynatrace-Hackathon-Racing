@@ -445,8 +445,8 @@ def main() -> int:
     parser.add_argument("--file", help="[replay] caminho do captura.txt")
     parser.add_argument("--loop", action="store_true", help="[replay] repete o arquivo indefinidamente")
     parser.add_argument("--speed", type=float, default=1.0, help="[replay] multiplicador de velocidade (0 = o mais rapido possivel, sem pausas)")
-    parser.add_argument("--batch-size", type=int, default=20)
-    parser.add_argument("--flush-interval", type=float, default=2.0, help="segundos entre envios ao Dynatrace")
+    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--flush-interval", type=float, default=1.0, help="segundos entre envios ao Dynatrace")
     parser.add_argument(
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",

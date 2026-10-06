@@ -8,6 +8,11 @@ rem --- Identidade deste simulador. Use um valor DIFERENTE em cada rig. ---
 set RIG_ID=rig-01
 set RIG_NAME=Simulador 1
 
+rem --- Quem esta na cadeira. Preenchido, vence o nome do perfil do AMS2 ---
+rem --- (que e o da conta Steam). Em branco, o nome vem do jogo.         ---
+set RACING_DRIVER=
+set RACING_COMPANY=
+
 rem --- Ambiente Dynatrace (classic, terminado em .live.dynatrace.com) ---
 set DT_ENV_URL=https://SEU_AMBIENTE.live.dynatrace.com
 

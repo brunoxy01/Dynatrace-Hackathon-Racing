@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -12,6 +12,157 @@ test('unvisited track stays neutral and distant samples cannot create heat', () 
 test('malformed events are dropped and missing values stay null', () => {
   assert.deepEqual(parseEvents([{timestamp:'bad'}]),[]);
   assert.equal(parseEvents([{timestamp:sample.timestamp}])[0].speed_kmh,null);
+});
+test('teleport and crash frames never become the peak speed', () => {
+  assert.equal(parseEvents([{...sample,speed_kmh:579.4}])[0].speed_kmh,null);
+  assert.equal(parseEvents([{...sample,speed_kmh:-5}])[0].speed_kmh,null);
+  assert.equal(parseEvents([{...sample,speed_kmh:300.6}])[0].speed_kmh,300.6);
+  assert.equal(summarize(parseEvents([{...sample,speed_kmh:300.6},{...sample,timestamp:'2026-09-19T00:00:01Z',speed_kmh:579.4}]))[0].peak,300.6);
+});
+test('curb and crash frames never become the reported g-force', () => {
+  assert.equal(parseEvents([{...sample,acceleration_g:105.8}])[0].acceleration_g,null);
+  assert.equal(parseEvents([{...sample,acceleration_g:3.23}])[0].acceleration_g,3.23);
+});
+// O nome do piloto e o carro chegam em pacotes UDP próprios, ~27s depois do
+// primeiro quadro. Enquanto não chegam, os dois campos vêm nulos.
+test('samples from before the name and car arrive belong to the same driver', () => {
+  const warmup = {...sample, driver_name:null, car_name:null};
+  const running = {...sample, timestamp:'2026-09-19T00:00:30Z'};
+  assert.equal(trails([warmup, running]).length, 1, 'uma sessão é um carro só no mapa');
+  const result = summarize([warmup, running]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].driver_name, 'Pilot');
+  assert.equal(result[0].car_name, 'Formula');
+});
+// As cinco linhas que apareceram na tela para DUAS voltas reais: o mesmo tempo
+// relistado a cada volta em que o carro passou, e de novo após o coletor
+// reiniciar (sessão nova).
+const registradas = [
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s2', last_lap_s:143.067, timestamp:'2026-09-25T11:11:03Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:97.400,  timestamp:'2026-09-25T11:00:57Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:143.067, timestamp:'2026-09-25T11:07:41Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:97.400,  timestamp:'2026-09-25T11:07:15Z'},
+  {...sample, 'rig.id':'rig-teste', driver_name:'plinioaugusto01', 'session.id':'s1', last_lap_s:143.067, timestamp:'2026-09-25T11:08:59Z'},
+];
+test('a lap time relisted across laps and sessions counts once', () => {
+  const unicas = dedupeLaps(registradas);
+  assert.equal(unicas.length, 2);
+  assert.deepEqual(unicas.map(l => l.last_lap_s).sort((a,b) => a-b), [97.400, 143.067]);
+  // Fica o instante em que a volta fechou de verdade, não a relistagem tardia.
+  assert.equal(unicas.find(l => l.last_lap_s === 143.067).timestamp, '2026-09-25T11:07:41Z');
+});
+test('same lap time by different drivers or rigs stays separate', () => {
+  const outro = {...registradas[0], driver_name:'Outro'};
+  const outroRig = {...registradas[0], 'rig.id':'rig-02'};
+  assert.equal(dedupeLaps([registradas[0], outro, outroRig]).length, 3);
+});
+test('ranking is one row per lap, fastest first, not one per driver', () => {
+  const rivais = [...registradas, {...sample, 'rig.id':'rig-02', driver_name:'Ana', last_lap_s:95.1, timestamp:'2026-09-25T11:05:00Z'}];
+  const rank = lapsByTime(dedupeLaps(rivais));
+  // Duas voltas do Plinio + uma da Ana: o piloto rápido ocupa mais de uma linha.
+  assert.deepEqual(rank.map(l => [l.driver_name, l.last_lap_s]),
+    [['Ana', 95.1], ['plinioaugusto01', 97.4], ['plinioaugusto01', 143.067]]);
+});
+test('ranking drops laps without a usable time', () => {
+  assert.equal(lapsByTime([{...sample, last_lap_s:null}, {...sample, last_lap_s:0}]).length, 0);
+});
+test('company podium takes the fastest lap of each company, not of each driver', () => {
+  // O caso relatado: o Bruno tem uma volta lenta e uma média; o Plinio tem a
+  // mais rápida da Dynatrace. O pódio tem de mostrar a do Plinio.
+  const voltas = lapsByTime([
+    {...sample, driver_name:'Bruno', company_name:'Dynatrace', last_lap_s:143.0},
+    {...sample, driver_name:'Plinio', company_name:'Dynatrace', last_lap_s:97.4},
+    {...sample, driver_name:'Bruno', company_name:'Dynatrace', last_lap_s:120.0},
+    {...sample, driver_name:'Ana', company_name:'Bradesco', last_lap_s:110.0},
+    {...sample, driver_name:'Sem empresa', company_name:null, last_lap_s:90.0},
+  ]);
+  const podio = companyPodium(voltas, 3);
+  assert.deepEqual(podio.map(l => [l.company_name, l.driver_name, l.last_lap_s]),
+    [['Dynatrace', 'Plinio', 97.4], ['Bradesco', 'Ana', 110.0]]);
+});
+test('the lap window ends at the close and reaches back one lap time', () => {
+  // A volta fechou às 00:01:44 e durou 104,015s. A margem é assimétrica: folga
+  // antes, porque o instante registrado pode chegar depois do cruzamento.
+  const lap = {...sample, timestamp:'2026-09-19T00:01:44.000Z', last_lap_s:104.015};
+  assert.deepEqual(lapWindow(lap, 30000, 3000), {
+    from:'2026-09-18T23:59:29.985Z',
+    to:'2026-09-19T00:01:47.000Z',
+  });
+  // Sem margem, a janela dura exatamente o tempo da volta.
+  const exata = lapWindow(lap, 0, 0);
+  assert.equal((Date.parse(exata.to) - Date.parse(exata.from)) / 1000, 104.015);
+});
+test('laps without a usable duration produce no window', () => {
+  assert.equal(lapWindow({...sample, last_lap_s:null}, 30000, 3000), null);
+  assert.equal(lapWindow({...sample, last_lap_s:0}, 30000, 3000), null);
+  assert.equal(lapWindow({...sample, timestamp:'nao é data', last_lap_s:90}, 30000, 3000), null);
+});
+test('the name and car learned later fill in the start of the same session', () => {
+  const warmup = {...sample, driver_name:null, car_name:null};
+  const named = {...sample, timestamp:'2026-09-19T00:00:30Z'};
+  const [first] = backfillIdentity([warmup, named]);
+  assert.equal(first.driver_name, 'Pilot');
+  assert.equal(first.car_name, 'Formula');
+  // O painel precisa do nome já na primeira amostra revelada pelo replay.
+  assert.equal(summarize(backfillIdentity([warmup, named]).slice(0,1))[0].driver_name, 'Pilot');
+});
+test('backfill never borrows a name from another session', () => {
+  const nameless = {...sample, 'rig.id':'2', driver_name:null, car_name:null};
+  const [, outro] = backfillIdentity([sample, nameless]);
+  assert.equal(outro.driver_name, null);
+  assert.equal(outro.car_name, null);
+});
+test('different rigs and different sessions stay separate drivers', () => {
+  assert.equal(trails([sample, {...sample,'rig.id':'2'}]).length, 2);
+  assert.equal(trails([sample, {...sample,'session.id':'s2'}]).length, 2);
+});
+test('trails group by driver in time order and skip samples without a position', () => {
+  const late = {...sample,timestamp:'2026-09-19T00:00:02Z',pos_x:20};
+  const early = {...sample,timestamp:'2026-09-19T00:00:01Z',pos_x:10};
+  const other = {...sample,'rig.id':'2',pos_x:99};
+  const result = trails([late, early, {...sample,pos_x:null}, other]);
+  assert.equal(result.length,2);
+  assert.deepEqual(result[0].map(e => e.pos_x),[10,20]);
+  assert.deepEqual(result[1].map(e => e.pos_x),[99]);
+});
+test('playback picks the last sample up to the clock, never the future', () => {
+  const trail = [0,1,2,3].map(s => ({...sample,timestamp:`2026-09-19T00:00:0${s}Z`,pos_x:s}));
+  const at = s => Date.parse(`2026-09-19T00:00:0${s}Z`);
+  assert.equal(sampleAt(trail,at(2)).pos_x,2);
+  assert.equal(sampleAt(trail,at(2)+500).pos_x,2);
+  assert.equal(sampleAt(trail,at(0)-9000).pos_x,0);
+  assert.equal(sampleAt(trail,at(9)).pos_x,3);
+});
+// Constantes reais do TrackMap: passo de 50 ms, rastro alvo de 8 s.
+const STEP = 50, TRAIL = 8000;
+test('playback advances one step at a time and never runs past the newest sample', () => {
+  assert.equal(advancePlayback(1000, 0, 5000, STEP, TRAIL),1050);
+  assert.equal(advancePlayback(4980, 0, 5000, STEP, TRAIL),5000);
+  assert.equal(advancePlayback(5000, 0, 5000, STEP, TRAIL),5000);
+});
+test('playback resyncs when the clock falls outside the loaded block', () => {
+  // Aba em segundo plano: o relógio ficou 60 s para trás e precisa voltar ao rastro.
+  assert.equal(advancePlayback(40000, 0, 100000, STEP, TRAIL),92000);
+  // Troca de período para trás: o relógio está no futuro do bloco.
+  assert.equal(advancePlayback(500000, 0, 100000, STEP, TRAIL),92000);
+  // Bloco mais curto que o rastro: não dá para recuar antes da primeira amostra.
+  assert.equal(advancePlayback(999999, 95000, 100000, STEP, TRAIL),95000);
+});
+test('playback keeps up with a 5s refresh instead of drifting or stalling', () => {
+  // Simula o regime real: consulta a cada 5 s, animação a 20 quadros por segundo.
+  let newest = 100000, clock = newest, stalled = 0, resyncs = 0;
+  for (let cycle = 0; cycle < 40; cycle++) {
+    newest += 5000;
+    for (let frame = 0; frame < 5000 / STEP; frame++) {
+      const next = advancePlayback(clock, 0, newest, STEP, TRAIL);
+      if (next === clock) stalled++;
+      if (next < clock) resyncs++;
+      clock = next;
+    }
+  }
+  assert.equal(stalled,0,'o carro nunca deve congelar entre consultas');
+  assert.equal(resyncs,0,'o regime estável não deve precisar de ressincronização');
+  assert.ok(newest - clock <= TRAIL, `o atraso final (${newest-clock}ms) deve caber no rastro`);
 });
 test('unfinished or last laps never become validated best laps', () => {
   const result = summarize([{...sample,last_lap_s:104.015}]);
@@ -60,7 +211,7 @@ test('the same sample arriving by bizevents and by otel is counted once', () => 
 test('samples without sample.id never collapse into each other', () => {
   const a = {...sample};
   const b = {...sample, timestamp:'2026-09-19T00:00:01Z'};
-  const other = {...sample, driver_name:'Outro'};
+  const other = {...sample, 'rig.id':'2'};
   assert.equal(mergeTelemetry([a],[b]).length, 2);
   assert.equal(mergeTelemetry([a],[other]).length, 2);
   assert.equal(mergeTelemetry([a],[{...a}]).length, 1);
@@ -113,4 +264,128 @@ test('podium ordering follows the times brought by the lap query', () => {
     {...sample, driver_name:'C', 'rig.id':'3', last_lap_s:112},
   ]);
   assert.deepEqual(ordenado.map(d => d.driver_name), ['B','A','C']);
+});
+
+// A janela buscada no Grail tem margem nas duas pontas: começa antes da largada
+// e termina depois. O recorte precisa deixar só a volta.
+const quadro = (t, x, y) => ({...sample, lap_time_s:t, pos_x:x, pos_y:y, timestamp:`2026-09-19T00:00:${String(Math.floor(t)+10).padStart(2,'0')}Z`});
+test('lap trimming starts at the line, not before it', () => {
+  const janela = [
+    // cauda da volta anterior: o jogo ainda não reportava cronômetro
+    {...quadro(0, -20, 0), lap_time_s:null}, {...quadro(0, -10, 0), lap_time_s:null},
+    quadro(0.05, 0, 0), quadro(30, 100, 0), quadro(60, 200, 0), quadro(89.9, 5, 0),
+    // já é a volta seguinte: cronômetro zerou
+    quadro(0.04, 0, 0), quadro(1.2, 10, 0),
+  ];
+  const volta = trimToLap(janela, 90);
+  assert.equal(volta.length, 4, 'só os quadros da volta');
+  assert.equal(volta[0].lap_time_s, 0.05, 'começa na largada, não antes');
+  assert.equal(volta[volta.length-1].lap_time_s, 89.9, 'termina ao fechar, não na volta seguinte');
+});
+test('lap trimming leaves samples alone when there is no usable timer', () => {
+  const cegos = [{...sample, lap_time_s:null}, {...sample, lap_time_s:null}];
+  assert.equal(trimToLap(cegos, 90).length, 2);
+});
+test('delta is zero against the reference lap itself and blank at the line', () => {
+  const nodes = [[0,0],[100,0],[200,0]];
+  const referencia = [quadro(0.0, 0, 0), quadro(30, 100, 0), quadro(60, 200, 0)];
+  const perfil = lapProfile(referencia, nodes);
+  assert.deepEqual(perfil, [0, 30, 60]);
+  // mesmo ponto, mesmo tempo -> sem diferença
+  assert.equal(deltaToReference(quadro(30, 100, 0), perfil, nodes, 90), 0);
+  // dois segundos atrás do líder no mesmo ponto
+  assert.equal(deltaToReference(quadro(32, 100, 0), perfil, nodes, 90), 2);
+  // dois segundos à frente
+  assert.equal(deltaToReference(quadro(28, 100, 0), perfil, nodes, 90), -2);
+  // fechando a volta sobre a largada: casaria com o instante zero e daria uma
+  // volta inteira de diferença — não há comparação a fazer ali
+  assert.equal(deltaToReference(quadro(89.5, 0, 0), perfil, nodes, 90), null);
+  // fora da pista: sem ponto de referência
+  assert.equal(deltaToReference(quadro(30, 9999, 9999), perfil, nodes, 90), null);
+});
+
+test('a window holding more than one lap still picks the right one', () => {
+  // Com folga de 30s antes, a janela pega a cauda da volta anterior e o começo
+  // da seguinte. O recorte tem de ficar com a volta do meio, a de 90s.
+  const janela = [
+    quadro(140, -50, 0), quadro(142, -30, 0),          // fim da volta anterior, mais lenta
+    quadro(0.06, 0, 0), quadro(45, 150, 0), quadro(89.8, 3, 0),  // a volta pedida
+    quadro(0.05, 0, 0), quadro(2.5, 20, 0),            // começo da seguinte
+  ];
+  const volta = trimToLap(janela, 90);
+  assert.equal(volta.length, 3);
+  assert.equal(volta[0].lap_time_s, 0.06);
+  assert.equal(volta[volta.length-1].lap_time_s, 89.8);
+  assert.equal(startsAtLine(volta), true);
+});
+test('a lap whose start fell outside the window is flagged, not faked', () => {
+  // O coletor reiniciado reanuncia uma volta antiga: o trecho gravado começa
+  // com o cronômetro já andando e não há largada ali.
+  const parcial = [quadro(38, 120, 0), quadro(60, 200, 0), quadro(89.9, 4, 0)];
+  const volta = trimToLap(parcial, 90);
+  assert.equal(volta.length, 3, 'reproduz o que existe');
+  assert.equal(startsAtLine(volta), false, 'mas avisa que não começa na linha');
+});
+test('startsAtLine needs a real timer reading', () => {
+  assert.equal(startsAtLine([]), false);
+  assert.equal(startsAtLine([{...sample, lap_time_s:null}]), false);
+});
+
+test('a lap recorded under an earlier session still counts as the current driver\'s best', () => {
+  // dedupeLaps mantém a OCORRÊNCIA MAIS ANTIGA de uma volta: se o piloto
+  // reiniciou a sessão depois de bater aquele tempo, a linha da volta aponta
+  // para a sessão velha, não para a sessão ao vivo agora.
+  const voltaNaSessaoVelha = {...sample, 'session.id':'sessao-antiga', last_lap_s:101};
+  const pilotoNaSessaoNova = summarize([{...sample, 'session.id':'sessao-nova'}]);
+  assert.equal(pilotoNaSessaoNova[0].best, null);
+  const comResultado = applyLapResults(pilotoNaSessaoNova, [voltaNaSessaoVelha]);
+  assert.equal(comResultado[0].best, 101);
+  assert.equal(comResultado[0].bestSource, 'completed');
+});
+
+test('matching by driver name never merges two different rigs or a renamed driver', () => {
+  const doisRigs = summarize([
+    {...sample, 'rig.id':'rig-01', 'session.id':'nova-1'},
+    {...sample, 'rig.id':'rig-02', 'session.id':'nova-2'},
+  ]);
+  const comVoltas = applyLapResults(doisRigs, [
+    {...sample, 'rig.id':'rig-01', 'session.id':'velha-1', last_lap_s:90},
+    // mesmo rig.id, nome diferente: nao e' o mesmo piloto, nao deve casar
+    {...sample, 'rig.id':'rig-02', 'session.id':'velha-2', driver_name:'Outro', last_lap_s:70},
+  ]);
+  const porRig = Object.fromEntries(comVoltas.map(d => [d['rig.id'], d.best]));
+  assert.equal(porRig['rig-01'], 90);
+  assert.equal(porRig['rig-02'], null);
+});
+
+test('trackHeat bridges a short gap flanked by real data on both sides', () => {
+  // Nós em linha, bem afastados entre si (e um array grande o bastante para o
+  // outro lado do círculo não "vazar" por perto): a posição de cada evento é
+  // colocada EXATAMENTE sobre o nó-alvo, então a distância de corte do
+  // nearestNode não interfere — isola só a lógica de preenchimento de lacuna.
+  const nodes = Array.from({length: 12}, (_, i) => [i * 10, 0]);
+  const evento = (i, valor) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], speed_kmh: valor});
+  // nó 1 fica sem amostra própria, entre o nó 0 (100) e o nó 2 (200)
+  const resultado = trackHeat([evento(0,100), evento(2,200)], 'speed_kmh', nodes);
+  assert.equal(resultado[1], 150); // (100*1 + 200*1) / 2, distancia 1 dos dois lados
+  // um nó do lado oposto do círculo, sem NENHUM dado real por perto nos dois
+  // sentidos (mais de MAX_GAP_NODES em qualquer direção), continua cinza
+  assert.equal(resultado[6], null);
+});
+
+test('trackHeat never bridges a gap wider than the tolerance, even with data on both ends', () => {
+  const nodes = Array.from({length: 10}, (_, i) => [i * 10, 0]);
+  const evento = (i, valor) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], speed_kmh: valor});
+  // nós 0 e 9 coloridos, nós 1..8 (lacuna de 8, bem maior que o limite de 3
+  // nós) devem TODOS continuar cinza — nenhum ponto no meio tem dado real
+  // perto o bastante dos dois lados.
+  const resultado = trackHeat([evento(0,100), evento(9,200)], 'speed_kmh', nodes);
+  for (let i = 1; i <= 8; i++) assert.equal(resultado[i], null, `nó ${i} deveria continuar cinza`);
+});
+
+test('trackHeat keeps a two-node track behaving like before: no wraparound bridging', () => {
+  // Com só 2 nós, "os dois lados" do nó sem dado caem no MESMO nó ao
+  // contornar o círculo — não é uma lacuna cercada por dados DISTINTOS, então
+  // o comportamento de sempre (nó sem amostra própria fica cinza) continua.
+  assert.deepEqual(trackHeat([sample,{...sample,pos_x:9999}], 'speed_kmh',[[0,0],[100,100]]),[100,null]);
 });

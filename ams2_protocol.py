@@ -102,6 +102,21 @@ def decode_header(raw: bytes) -> Header:
     )
 
 
+# Nenhum carro do AMS2 chega perto disto, nem um Formula USA na oval de
+# Indianapolis. O jogo emite quadros acima desse limite quando teletransporta o
+# carro (voltar aos boxes, reiniciar a sessao) ou quando a fisica lanca o carro
+# numa batida: sSpeed vira a distancia do salto dividida pelo tick. Um unico
+# quadro desses definia sozinho a "velocidade maxima" do painel, entao a leitura
+# e' descartada em vez de ser ingerida.
+MAX_PLAUSIBLE_SPEED_KMH = 400.0
+
+# Mesmo tipo de quadro quebrado, no acelerometro. Nenhum carro de corrida passa
+# de ~6 g nem na frenagem mais forte - na captura real o p99 e' 3,2 g -, mas
+# zebra alta, batida e reposicionamento produzem picos absurdos (105 g na
+# captura). Sao 0,04% dos quadros, e bastavam para sujar a leitura na tela.
+MAX_PLAUSIBLE_G = 10.0
+
+
 def decode_telemetry(raw: bytes) -> dict:
     """packetType == 0. Carro atualmente visualizado (o simulador local)."""
     brake = _u8(raw, 29)
@@ -117,15 +132,16 @@ def decode_telemetry(raw: bytes) -> dict:
     gear = -1 if gear_raw == 0xF else gear_raw  # 0xF = re
 
     accel_g = (sum(a * a for a in accel) ** 0.5) / 9.81
+    speed_kmh = round(speed_ms * 3.6, 1)
 
     return {
-        "speed_kmh": round(speed_ms * 3.6, 1),
+        "speed_kmh": speed_kmh if 0 <= speed_kmh <= MAX_PLAUSIBLE_SPEED_KMH else None,
         "gear": gear,
         "num_gears": num_gears,
         "brake_pct": round(brake / 255 * 100, 1),
         "throttle_pct": round(throttle / 255 * 100, 1),
         "clutch_pct": round(clutch / 255 * 100, 1),
-        "acceleration_g": round(accel_g, 3),
+        "acceleration_g": round(accel_g, 3) if accel_g <= MAX_PLAUSIBLE_G else None,
         "acceleration_xyz": [round(a, 3) for a in accel],
         "pos_x": round(full_pos[0], 2),
         "pos_y": round(full_pos[2], 2),  # eixo Z do jogo ~ "y" no mapa 2D (X/Z = plano do chao)
@@ -249,6 +265,11 @@ class SessionState:
             self.driver_name = next(iter(names.values()))
 
     def ingest_vehicle_names(self, raw: bytes, size_bytes: int) -> None:
+        # O AMS2 manda sCarIndex = 0xFFFF para o carro do proprio jogador (o
+        # sentinela "sou eu"), entao o indice nunca casa com o catalogo e quem
+        # resolve o modelo na pratica e' o fallback abaixo. Numa sessao solo o
+        # catalogo tem um veiculo so' e o resultado e' exato; com IA na pista ha'
+        # varios e o primeiro da lista pode nao ser o do jogador.
         vehicles = decode_vehicle_names(raw, size_bytes)
         if self._last_car_index is not None and self._last_car_index in vehicles:
             self.car_name = vehicles[self._last_car_index]

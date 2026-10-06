@@ -134,7 +134,7 @@ python prepare_capture.py
 
 1. No AMS2, habilite a saída UDP e selecione o protocolo Project CARS 2. Confira frequência e porta no local; o coletor usa 5606 por padrão.
 2. Execute um coletor por simulador, com `rig-id` diferente. Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
-3. Antes de cada nova participação, reinicie o coletor para gerar nova `session.id`. Confirme o nome no jogo: o mesmo perfil sem separar sessões mistura participantes.
+3. Antes de cada nova participação, preencha `driver_name` e `company_name` no `racing.ini` (ou `--driver-name` / `--company-name`) e reinicie o coletor, que gera nova `session.id`. O AMS2 não pergunta o nome do piloto: sem isso, todos aparecem com o nome da conta Steam do rig, e o mesmo perfil sem separar sessões mistura participantes.
 4. Abra **Grail · histórico e ao vivo** e selecione o período desejado. O padrão são os últimos 7 dias; o seletor Strato oferece horas, hoje, ontem e datas personalizadas. Intervalos terminando em agora atualizam a cada 30 segundos; períodos fechados podem ser atualizados manualmente. A consulta retorna até 10.000 eventos recentes no intervalo e avisa quando atinge esse limite. Rankings representam essa amostra; para classificar todo o evento ainda é necessário persistir/agregar resultados no backend.
 
 Primeiro, teste sem ingestão:
