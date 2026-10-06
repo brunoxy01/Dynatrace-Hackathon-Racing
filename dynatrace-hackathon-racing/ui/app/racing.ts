@@ -396,8 +396,15 @@ export function heatColor(value: number, max: number) {
 }
 
 // Normalized contributions, with braking emphasized. No physical unit for this composite.
-export function mixedHeatColor(speed: number | null, brake: number | null, acceleration: number | null): string | null {
-  if (speed === null && brake === null && acceleration === null) return null;
+//
+// Um nó sem dado nenhum cai no mesmo "sem total" de um nó com dado real mas
+// zerado (parado, sem frear, sem acelerar) — e os dois mostram o azul padrão
+// de propósito. Antes "sem dado" virava null e a pista ficava cinza ali, dando
+// a impressão de telemetria perdida/quebrada num trecho que só não tinha
+// amostra o bastante perto. Azul por padrão não distingue "sem dado" de
+// "parado", mas evita o visual de erro — e o resto do traçado continua
+// mostrando a cor real onde há dado.
+export function mixedHeatColor(speed: number | null, brake: number | null, acceleration: number | null): string {
   const weights = [Math.max(0, brake ?? 0) / 35, Math.max(0, acceleration ?? 0) / 3.5, Math.max(0, speed ?? 0) / 320].map(v => v ** 3);
   const total = weights.reduce((a,b) => a+b,0);
   if (!total) return 'rgb(52, 145, 255)';

@@ -192,7 +192,12 @@ test('completed clean lap is derived only at the finish and labeled', () => {
 });
 
 test('mixed map preserves empty areas and distinguishes all three signals', () => {
-  assert.equal(mixedHeatColor(null,null,null),null);
+  // Sem dado nenhum cai no mesmo "sem total" de um nó parado/sem frear/sem
+  // acelerar: os dois mostram o azul padrão, de propósito - "sem dado" não
+  // deve mais deixar a pista com um buraco cinza, parecendo telemetria
+  // perdida num trecho que só não teve amostra perto o bastante.
+  assert.equal(mixedHeatColor(null,null,null),'rgb(52, 145, 255)');
+  assert.equal(mixedHeatColor(0,0,0),'rgb(52, 145, 255)');
   assert.equal(mixedHeatColor(300,0,0),'rgb(52, 145, 255)');
   assert.equal(mixedHeatColor(0,100,0),'rgb(245, 69, 75)');
   assert.equal(mixedHeatColor(0,0,3),'rgb(51, 220, 125)');

@@ -331,7 +331,7 @@ export const Dashboard = () => {
     <div className="panel-heading"><div><span className="eyebrow">AUTÓDROMO JOSÉ CARLOS PACE</span><Heading level={2}>Interlagos <span className="track-country">BR</span></Heading></div><span className="track-distance">4,295 <small>km</small></span></div>
     <div className="metric-tabs mixed-legend" aria-label="Legenda do mapa combinado"><span><i className="legend-dot speed_kmh"/>Velocidade</span><span><i className="legend-dot brake_pct"/>Frenagem</span><span><i className="legend-dot acceleration_g"/>Aceleração</span></div>
     <TrackMap events={filtered} carName={focus?.car_name} animate={mode === 'live'} />
-    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
+    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Azul também é o padrão onde ainda não há dado.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
     {progresso}
   </section>;
 
@@ -387,7 +387,7 @@ export const Dashboard = () => {
     </div>
     <section className="panel leaderboard">
       <div className="panel-heading"><div><span className="eyebrow">VOLTAS DO PERÍODO</span><Heading level={2}>Voltas registradas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div>
-      <Flex alignItems="center" gap={8} flexWrap="wrap">
+      <Flex alignItems="center" gap={8} flexWrap="wrap" className="filtros-replay">
         <span className="muted">Filtrar por</span>
         <Select aria-label="Filtrar por piloto" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{lapDrivers.map(l => <Select.Option key={driverKey(l)} value={driverKey(l)}>{l.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>
         <Select aria-label="Filtrar por empresa" value={filtroEmpresa} onChange={v => setFiltroEmpresa(v ?? 'all')}><Select.Content><Select.Option value="all">Todas as empresas</Select.Option>{opcoesEmpresa.map(e => <Select.Option key={e} value={e}>{e}</Select.Option>)}</Select.Content></Select>
@@ -401,7 +401,16 @@ export const Dashboard = () => {
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
-      <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div></div>
+      <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div>
+        {/* Mesmo efeito de borda/brilho do painel do mapa (.track-panel), em
+            verde e amarelo em vez de roxo — o selo do Brasil, sede do evento. */}
+        <svg className="flag-br" viewBox="0 0 70 70" role="img" aria-label="Brasil">
+          <rect x="1" y="1" width="68" height="68" rx="14" fill="#0a8a3c"/>
+          <path d="M35 11 L60 35 L35 59 L10 35 Z" fill="#f6c700"/>
+          <circle cx="35" cy="35" r="12.5" fill="#1a3a7a"/>
+          <path d="M23.5 29.5 A12.5 12.5 0 0 1 46.5 29.5" fill="none" stroke="#f3f3f3" strokeWidth="1.6"/>
+        </svg>
+      </div>
       <div className="status-group">
         {mode !== 'stream' && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
         <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>

@@ -42,3 +42,12 @@
 /* No pódio de empresas o número já é grande e sem fundo (.place .posicao);
    a pílula é só para destacar a linha dentro da tabela. */
 .place .posicao-1,.place .posicao-2,.place .posicao-3{padding:0;background:none;border:none;box-shadow:none}
+
+/* Selo do Brasil no cabeçalho, mesmo efeito de brilho do .track-panel (borda
+   translúcida + glow interno), só que em verde/amarelo em vez de roxo. */
+.flag-br{width:64px;height:64px;flex-shrink:0;border-radius:14px;border:1px solid #2fa85566;box-shadow:0 0 0 1px #2fa85508,inset 0 0 18px #f6c7000e}
+@media(max-width:780px){.flag-br{width:48px;height:48px}}
+
+/* Filtros da tela de Replay: estavam sem margem nenhuma antes da tabela de
+   voltas, parecendo colados nela. */
+.filtros-replay{margin:16px 0 20px}
