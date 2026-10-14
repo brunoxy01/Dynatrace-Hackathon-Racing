@@ -15,6 +15,7 @@ const segments = points.map((p, i) => {
 });
 const start = points[0];
 const referencePoints = [0.12,0.28,0.43,0.59,0.73,0.89].map(t => Math.floor(t * points.length));
+export const REFERENCE_POINT_COUNT = referencePoints.length;
 // Mesma numeração (1..6) usada nos insights da aba Dynatrace Intelligence —
 // permite plotar ali um marcador no lugar exato que o mapa também rotula.
 export function referencePointCoords(referencePoint: number): {x: number; y: number} | null {
@@ -109,13 +110,30 @@ export function InsightsMap({events, markers}: {events: Telemetry[]; markers: In
     <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".12" strokeWidth="15" strokeLinecap="round"/>
     <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".6" strokeWidth="5" strokeLinecap="round"/>
     <g fill="none" strokeWidth="4" strokeLinecap="round">{segments.map((d,i) => colors[i] !== null && colors[(i+1)%colors.length] !== null ? <path key={i} d={d} stroke={`url(#${id}-insight-${i})`}/> : null)}</g>
+    {/* Os 6 pontos de referência sempre aparecem, numerados, mesmo sem
+        nenhum destaque ali — é o que liga o "ponto 01/05" do texto ao lado a
+        um lugar concreto no desenho, igual ao mapa principal já faz. */}
+    {Array.from({length: REFERENCE_POINT_COUNT}, (_, i) => i + 1).map(referencePoint => {
+      const p = referencePointCoords(referencePoint);
+      if (!p || porPonto.has(referencePoint)) return null;
+      return <g key={`ref-${referencePoint}`} transform={`translate(${p.x},${p.y})`}>
+        <circle r="7" fill="var(--dt-colors-background-base-default, #202132)" stroke="#9aa0ad" strokeWidth="1.5"/>
+        <text textAnchor="middle" dominantBaseline="central" fontSize="7.5" fontWeight="700" fill="#9aa0ad">{String(referencePoint).padStart(2,'0')}</text>
+      </g>;
+    })}
     {[...porPonto.entries()].map(([referencePoint, lista]) => {
       const p = referencePointCoords(referencePoint);
       if (!p) return null;
       const zonas = lista.filter(m => m.kind === 'zona');
       const pilotos = lista.filter(m => m.kind === 'piloto');
-      const raioArco = 20;
+      const raioArco = 22;
       return <g key={referencePoint} transform={`translate(${p.x},${p.y})`}>
+        {/* Selo do número do ponto, sempre visível acima do cluster — o
+            mesmo número que o texto ao lado cita ("perto do ponto 01"). */}
+        <g transform={`translate(0,${-30 - zonas.length * 13})`}>
+          <circle r="9" fill="#20262e" stroke="#fff" strokeWidth="1.5"/>
+          <text textAnchor="middle" dominantBaseline="central" fontSize="8.5" fontWeight="700" fill="#fff">{String(referencePoint).padStart(2,'0')}</text>
+        </g>
         {zonas.map((m,i) => <g key={`zona-${i}`}>
           <circle r="9" fill={m.color} stroke="#fff" strokeWidth="2"/>
           <text y={-16 - i * 13} textAnchor="middle" fontSize="10.5" fontWeight="700" fill={m.color}>{m.label}</text>
