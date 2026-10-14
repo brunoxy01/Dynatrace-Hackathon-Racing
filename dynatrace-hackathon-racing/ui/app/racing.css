@@ -59,9 +59,15 @@
 .intelligence-kpis{grid-template-columns:repeat(3,1fr)}
 .intelligence-kpis .kpi p:first-of-type{min-height:32px}
 .insights-map-panel{margin-top:24px}
+.insights-map-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(220px,1fr);gap:20px;align-items:start}
 .insights-map{width:100%;height:320px;display:block;overflow:visible;margin-top:8px}
 .insights-map-legend{margin-top:4px}
-.insights-map-legend .muted{margin-left:auto}
+.insights-notes{border:1px solid var(--line);border-radius:10px;padding:18px 20px;align-self:stretch}
+.insights-notes ul{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:12px}
+.insights-notes li{font-size:13px;line-height:1.5;display:flex;align-items:flex-start;gap:9px}
+.insights-notes li .legend-dot{margin-top:5px;flex-shrink:0}
+.insights-notes>.muted{display:block;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+@media(max-width:1080px){.insights-map-row{grid-template-columns:1fr}}
 .intelligence-grid{grid-template-columns:1fr 1fr;margin-top:24px}
 .intelligence-grid .leaderboard{margin-top:0}
 @media(max-width:1080px){.intelligence-kpis{grid-template-columns:1fr}.intelligence-grid{grid-template-columns:1fr}}

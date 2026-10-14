@@ -455,15 +455,27 @@ export const Dashboard = () => {
     <section className="panel track-panel insights-map-panel">
       <div className="panel-heading"><div><span className="eyebrow">MAPA DOS DESTAQUES</span><Heading level={3}>Onde cada observação aconteceu</Heading></div></div>
       {mapaInsights.length
-        ? <>
-          <InsightsMap events={events} markers={mapaInsights}/>
-          <div className="metric-tabs mixed-legend insights-map-legend" aria-label="Legenda do mapa dos destaques">
-            <span><i className="legend-dot speed_kmh"/>Velocidade</span>
-            <span><i className="legend-dot brake_pct"/>Frenagem</span>
-            <span><i className="legend-dot acceleration_g"/>Aceleração</span>
-            <span className="muted">Bolinhas grandes: zona mais forte. Bolinhas com iniciais: os 3 pilotos mais fortes ali.</span>
+        ? <div className="insights-map-row">
+          <div>
+            <InsightsMap events={events} markers={mapaInsights}/>
+            <div className="metric-tabs mixed-legend insights-map-legend" aria-label="Legenda do mapa dos destaques">
+              <span><i className="legend-dot speed_kmh"/>Velocidade</span>
+              <span><i className="legend-dot brake_pct"/>Frenagem</span>
+              <span><i className="legend-dot acceleration_g"/>Aceleração</span>
+            </div>
           </div>
-        </>
+          <aside className="insights-notes" aria-label="O que o mapa mostra">
+            <span className="eyebrow">O QUE O MAPA MOSTRA</span>
+            <ul className="mixed-legend">
+              {hotspotFrenagem && <li><i className="legend-dot brake_pct"/>Freio mais forte perto do <b>ponto {String(hotspotFrenagem.referencePoint).padStart(2,'0')}</b>, média de <b>{number(hotspotFrenagem.avgBrakePct,0)}%</b>.</li>}
+              {hotspotAceleracao && <li><i className="legend-dot acceleration_g"/>Aceleração mais forte perto do <b>ponto {String(hotspotAceleracao.referencePoint).padStart(2,'0')}</b>, média de <b>{hotspotAceleracao.avgG.toFixed(2)} g</b>.</li>}
+              {picoVelocidade && <li><i className="legend-dot speed_kmh"/>Pico de velocidade de <b>{number(picoVelocidade.speedKmh,1)} km/h</b> por <b>{picoVelocidade.driverName ?? 'piloto sem nome'}</b>, perto do ponto {String(picoVelocidade.referencePoint).padStart(2,'0')}.</li>}
+              {frenagemPorPiloto[0] && <li><i className="legend-dot brake_pct"/>Freio mais forte entre os pilotos: <b>{frenagemPorPiloto[0].driverName}</b>, {number(frenagemPorPiloto[0].avgValue,0)}% no ponto {String(frenagemPorPiloto[0].referencePoint).padStart(2,'0')}.</li>}
+              {aceleracaoPorPiloto[0] && <li><i className="legend-dot acceleration_g"/>Aceleração mais forte entre os pilotos: <b>{aceleracaoPorPiloto[0].driverName}</b>, {aceleracaoPorPiloto[0].avgValue.toFixed(2)} g no ponto {String(aceleracaoPorPiloto[0].referencePoint).padStart(2,'0')}.</li>}
+            </ul>
+            <p className="muted">Bolinhas grandes no mapa: zona mais forte. Bolinhas com iniciais: os 3 pilotos mais fortes ali.</p>
+          </aside>
+        </div>
         : <p className="muted" role="status">Aguardando telemetria com posição para localizar os destaques no traçado.</p>}
     </section>
     <div className="hero-grid intelligence-grid">
