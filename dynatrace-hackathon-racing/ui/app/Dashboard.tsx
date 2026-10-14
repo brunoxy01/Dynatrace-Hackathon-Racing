@@ -10,7 +10,7 @@ import { Select } from '@dynatrace/strato-components/forms';
 import { Tabs, Tab } from '@dynatrace/strato-components/navigation';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
-import { TrackMap, InsightsMap } from './TrackMap';
+import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from './racing';
 import './racing.css';
@@ -274,11 +274,16 @@ export const Dashboard = () => {
   const frenagemPorPiloto = useMemo(() => brakingHotspotsByDriver(events, HEAT_NODES), [events]);
   const aceleracaoPorPiloto = useMemo(() => accelerationHotspotsByDriver(events, HEAT_NODES), [events]);
   const consistencia = useMemo(() => lapConsistency(lapResults), [lapResults]);
-  const mapaInsights = useMemo(() => [
-    hotspotFrenagem && {referencePoint: hotspotFrenagem.referencePoint, color: '#f5454b', label: 'Freio'},
-    hotspotAceleracao && {referencePoint: hotspotAceleracao.referencePoint, color: '#33dc7d', label: 'Aceleração'},
-    picoVelocidade && {referencePoint: picoVelocidade.referencePoint, color: '#3491ff', label: 'Velocidade'},
-  ].filter((m): m is {referencePoint: number; color: string; label: string} => Boolean(m)), [hotspotFrenagem, hotspotAceleracao, picoVelocidade]);
+  // Zonas (grandes, com texto) + os 3 pilotos mais fortes de freio e de
+  // aceleração (pequenos, com iniciais) — o mesmo recorte das duas listas
+  // abaixo, só que plotado no lugar da pista em vez de só em texto.
+  const mapaInsights = useMemo((): InsightMarker[] => [
+    hotspotFrenagem && {referencePoint: hotspotFrenagem.referencePoint, color: '#f5454b', label: 'Freio', kind: 'zona' as const},
+    hotspotAceleracao && {referencePoint: hotspotAceleracao.referencePoint, color: '#33dc7d', label: 'Aceleração', kind: 'zona' as const},
+    picoVelocidade && {referencePoint: picoVelocidade.referencePoint, color: '#3491ff', label: 'Velocidade', kind: 'zona' as const},
+    ...frenagemPorPiloto.slice(0,3).map(d => ({referencePoint: d.referencePoint, color: '#f5454b', label: d.driverName.slice(0,2).toUpperCase(), kind: 'piloto' as const})),
+    ...aceleracaoPorPiloto.slice(0,3).map(d => ({referencePoint: d.referencePoint, color: '#33dc7d', label: d.driverName.slice(0,2).toUpperCase(), kind: 'piloto' as const})),
+  ].filter((m): m is InsightMarker => Boolean(m)), [hotspotFrenagem, hotspotAceleracao, picoVelocidade, frenagemPorPiloto, aceleracaoPorPiloto]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
   // Volta de referência: a mais rápida do período. As amostras dela viram um
@@ -450,7 +455,15 @@ export const Dashboard = () => {
     <section className="panel track-panel insights-map-panel">
       <div className="panel-heading"><div><span className="eyebrow">MAPA DOS DESTAQUES</span><Heading level={3}>Onde cada observação aconteceu</Heading></div></div>
       {mapaInsights.length
-        ? <InsightsMap markers={mapaInsights}/>
+        ? <>
+          <InsightsMap events={events} markers={mapaInsights}/>
+          <div className="metric-tabs mixed-legend insights-map-legend" aria-label="Legenda do mapa dos destaques">
+            <span><i className="legend-dot speed_kmh"/>Velocidade</span>
+            <span><i className="legend-dot brake_pct"/>Frenagem</span>
+            <span><i className="legend-dot acceleration_g"/>Aceleração</span>
+            <span className="muted">Bolinhas grandes: zona mais forte. Bolinhas com iniciais: os 3 pilotos mais fortes ali.</span>
+          </div>
+        </>
         : <p className="muted" role="status">Aguardando telemetria com posição para localizar os destaques no traçado.</p>}
     </section>
     <div className="hero-grid intelligence-grid">

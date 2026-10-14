@@ -79,18 +79,55 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
   })}</>;
 }
 
-// Silhueta compacta da pista (sem mapa de calor nem carro) com marcadores nos
-// pontos de referência — usada pela aba Dynatrace Intelligence para mostrar
-// ONDE cada observação aconteceu, não só o número do ponto em texto.
-export function InsightsMap({markers}: {markers: {referencePoint: number; color: string; label: string}[]}) {
-  return <svg className="insights-map" viewBox="-10 0 680 450" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Mapa de Interlagos com os pontos de maior frenagem, aceleração e velocidade">
-    <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".3" strokeWidth="10" strokeLinecap="round"/>
-    {markers.map((m,i) => {
-      const p = referencePointCoords(m.referencePoint);
+export interface InsightMarker {
+  referencePoint: number;
+  color: string;
+  // Marcador "zona" é o destaque grande (freio/aceleração/velocidade), com
+  // rótulo de texto por cima. Marcador "piloto" é pequeno, com iniciais
+  // dentro — mesma convenção dos carros no mapa ao vivo — para não lotar o
+  // desenho de texto quando há vários pilotos no mesmo trecho.
+  kind: 'zona' | 'piloto';
+  label: string;
+}
+
+// Silhueta compacta da pista, com o próprio mapa de calor combinado (igual ao
+// mapa principal) por baixo dos marcadores — do contrário a imagem vira só
+// três bolinhas soltas num contorno cinza, sem nenhuma leitura própria.
+export function InsightsMap({events, markers}: {events: Telemetry[]; markers: InsightMarker[]}) {
+  const id = useId().replace(/:/g,'');
+  const colors = useMemo(() => {
+    const speed = trackHeat(events, 'speed_kmh', nodes), brake = trackHeat(events, 'brake_pct', nodes), acceleration = trackHeat(events, 'acceleration_g', nodes);
+    return speed.map((v,i) => mixedHeatColor(v,brake[i],acceleration[i]));
+  }, [events]);
+  // Marcadores no mesmo ponto de referência (ex.: freio e velocidade no
+  // mesmo trecho) empilham o rótulo em vez de desenhar texto por cima de
+  // texto; pilotos no mesmo ponto se espalham num pequeno arco ao redor.
+  const porPonto = new Map<number, InsightMarker[]>();
+  markers.forEach(m => { const lista = porPonto.get(m.referencePoint); if (lista) lista.push(m); else porPonto.set(m.referencePoint, [m]); });
+  return <svg className="insights-map" viewBox="16 -6 616 412" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Mapa de Interlagos com as zonas de maior frenagem, aceleração, velocidade e os pilotos que mais se destacaram em cada uma">
+    <defs>{points.map((p,i) => <linearGradient key={i} id={`${id}-insight-${i}`} gradientUnits="userSpaceOnUse" x1={p.x} y1={p.y} x2={at(i+1).x} y2={at(i+1).y}><stop stopColor={colors[i] ?? 'transparent'}/><stop offset="1" stopColor={colors[(i+1)%colors.length] ?? colors[i] ?? 'transparent'}/></linearGradient>)}</defs>
+    <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".12" strokeWidth="15" strokeLinecap="round"/>
+    <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".6" strokeWidth="5" strokeLinecap="round"/>
+    <g fill="none" strokeWidth="4" strokeLinecap="round">{segments.map((d,i) => colors[i] !== null && colors[(i+1)%colors.length] !== null ? <path key={i} d={d} stroke={`url(#${id}-insight-${i})`}/> : null)}</g>
+    {[...porPonto.entries()].map(([referencePoint, lista]) => {
+      const p = referencePointCoords(referencePoint);
       if (!p) return null;
-      return <g key={i} transform={`translate(${p.x},${p.y})`}>
-        <circle r="10" fill={m.color} stroke="#fff" strokeWidth="2"/>
-        <text y="-16" textAnchor="middle" fontSize="11" fontWeight="700" fill={m.color}>{m.label}</text>
+      const zonas = lista.filter(m => m.kind === 'zona');
+      const pilotos = lista.filter(m => m.kind === 'piloto');
+      const raioArco = 20;
+      return <g key={referencePoint} transform={`translate(${p.x},${p.y})`}>
+        {zonas.map((m,i) => <g key={`zona-${i}`}>
+          <circle r="9" fill={m.color} stroke="#fff" strokeWidth="2"/>
+          <text y={-16 - i * 13} textAnchor="middle" fontSize="10.5" fontWeight="700" fill={m.color}>{m.label}</text>
+        </g>)}
+        {pilotos.map((m,i) => {
+          const angulo = (Math.PI / (pilotos.length + 1)) * (i + 1) + Math.PI / 2;
+          const x = Math.cos(angulo) * raioArco, y = Math.sin(angulo) * raioArco;
+          return <g key={`piloto-${i}`} transform={`translate(${x},${y})`}>
+            <circle r="8" fill={m.color} stroke="#fff" strokeWidth="1.5"/>
+            <text textAnchor="middle" dominantBaseline="central" fontSize="7" fontWeight="700" fill="#fff">{m.label}</text>
+          </g>;
+        })}
       </g>;
     })}
   </svg>;
