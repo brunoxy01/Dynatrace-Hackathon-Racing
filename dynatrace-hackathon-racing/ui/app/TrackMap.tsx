@@ -15,6 +15,12 @@ const segments = points.map((p, i) => {
 });
 const start = points[0];
 const referencePoints = [0.12,0.28,0.43,0.59,0.73,0.89].map(t => Math.floor(t * points.length));
+// Mesma numeração (1..6) usada nos insights da aba Dynatrace Intelligence —
+// permite plotar ali um marcador no lugar exato que o mapa também rotula.
+export function referencePointCoords(referencePoint: number): {x: number; y: number} | null {
+  const index = referencePoints[referencePoint - 1];
+  return index === undefined ? null : points[index];
+}
 
 const PLAYBACK_STEP_MS = 50;
 // Quanto o relógio de reprodução anda atrás da amostra mais nova. Precisa cobrir
@@ -71,6 +77,23 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
       <title>{car.driver_name ?? 'Piloto'} · {car.company_name ?? 'Sem empresa'} · {number(car.speed_kmh,1)} km/h</title>
     </g>;
   })}</>;
+}
+
+// Silhueta compacta da pista (sem mapa de calor nem carro) com marcadores nos
+// pontos de referência — usada pela aba Dynatrace Intelligence para mostrar
+// ONDE cada observação aconteceu, não só o número do ponto em texto.
+export function InsightsMap({markers}: {markers: {referencePoint: number; color: string; label: string}[]}) {
+  return <svg className="insights-map" viewBox="-10 0 680 450" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Mapa de Interlagos com os pontos de maior frenagem, aceleração e velocidade">
+    <path d={segments.join(' ')} fill="none" stroke={Colors.Charts.Categorical.Color05.Default} strokeOpacity=".3" strokeWidth="10" strokeLinecap="round"/>
+    {markers.map((m,i) => {
+      const p = referencePointCoords(m.referencePoint);
+      if (!p) return null;
+      return <g key={i} transform={`translate(${p.x},${p.y})`}>
+        <circle r="10" fill={m.color} stroke="#fff" strokeWidth="2"/>
+        <text y="-16" textAnchor="middle" fontSize="11" fontWeight="700" fill={m.color}>{m.label}</text>
+      </g>;
+    })}
+  </svg>;
 }
 
 export function TrackMap({events, carName, animate = false}: {events: Telemetry[]; carName?: string | null; animate?: boolean}) {

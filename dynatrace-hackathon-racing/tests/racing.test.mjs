@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, topSpeedLocation, lapConsistency } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -457,12 +457,51 @@ test('brakingHotspot returns null without any usable sample', () => {
 test('topSpeedLocation picks the single fastest valid sample, ignoring invalid ones', () => {
   const nodes = [[0,0],[50,0]];
   const resultado = topSpeedLocation([
-    {...sample, pos_x:0, pos_y:0, speed_kmh:120},
-    {...sample, pos_x:50, pos_y:0, speed_kmh:310},
+    {...sample, pos_x:0, pos_y:0, speed_kmh:120, driver_name:'Lento'},
+    {...sample, pos_x:50, pos_y:0, speed_kmh:310, driver_name:'Rápido'},
     {...sample, pos_x:50, pos_y:0, speed_kmh:null},
   ], nodes);
   assert.equal(resultado.speedKmh, 310);
   assert.equal(resultado.referencePoint, nearestReferencePoint(1, nodes.length));
+  assert.equal(resultado.driverName, 'Rápido');
+});
+
+test('accelerationHotspot finds the node with the strongest average acceleration', () => {
+  const nodes = [[0,0],[50,0],[100,0]];
+  const evento = (i, g) => ({...sample, pos_x: nodes[i][0], pos_y: nodes[i][1], acceleration_g: g});
+  const resultado = accelerationHotspot([evento(0,0.5), evento(2,2.5), evento(2,3.1), evento(1,1)], nodes);
+  assert.ok(Math.abs(resultado.avgG - 2.8) < 1e-9); // média do nó 2: (2.5+3.1)/2
+  assert.equal(resultado.referencePoint, nearestReferencePoint(2, nodes.length));
+});
+
+test('accelerationHotspot returns null without any usable sample', () => {
+  const nodes = [[0,0],[50,0]];
+  assert.equal(accelerationHotspot([{...sample, acceleration_g:null}], nodes), null);
+});
+
+test('brakingHotspotsByDriver ranks each driver by their own strongest zone', () => {
+  const nodes = [[0,0],[50,0],[100,0]];
+  const evento = (driver, i, brake) => ({...sample, driver_name: driver, pos_x: nodes[i][0], pos_y: nodes[i][1], brake_pct: brake});
+  const resultado = brakingHotspotsByDriver([
+    evento('Forte', 0, 95), evento('Forte', 1, 10),
+    evento('Suave', 2, 40),
+  ], nodes);
+  assert.deepEqual(resultado.map(r => r.driverName), ['Forte', 'Suave']);
+  assert.equal(resultado[0].referencePoint, nearestReferencePoint(0, nodes.length));
+  assert.equal(resultado[0].avgValue, 95);
+  assert.equal(resultado[1].avgValue, 40);
+});
+
+test('brakingHotspotsByDriver ignores samples without a driver name', () => {
+  const nodes = [[0,0],[50,0]];
+  assert.deepEqual(brakingHotspotsByDriver([{...sample, driver_name:null, brake_pct:90}], nodes), []);
+});
+
+test('accelerationHotspotsByDriver ranks each driver by their own strongest zone', () => {
+  const nodes = [[0,0],[50,0]];
+  const evento = (driver, i, g) => ({...sample, driver_name: driver, pos_x: nodes[i][0], pos_y: nodes[i][1], acceleration_g: g});
+  const resultado = accelerationHotspotsByDriver([evento('A', 0, 3), evento('B', 1, 1.5)], nodes);
+  assert.deepEqual(resultado.map(r => r.driverName), ['A', 'B']);
 });
 
 test('lapConsistency ranks drivers by standard deviation, drops single-lap drivers', () => {

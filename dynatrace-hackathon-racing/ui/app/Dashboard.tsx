@@ -10,9 +10,9 @@ import { Select } from '@dynatrace/strato-components/forms';
 import { Tabs, Tab } from '@dynatrace/strato-components/navigation';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
-import { TrackMap } from './TrackMap';
+import { TrackMap, InsightsMap } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, topSpeedLocation, lapConsistency } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -269,8 +269,16 @@ export const Dashboard = () => {
   // carregado (telemetria do período + voltas concluídas), sem consulta nova
   // ao Grail nem IA externa.
   const hotspotFrenagem = useMemo(() => brakingHotspot(events, HEAT_NODES), [events]);
+  const hotspotAceleracao = useMemo(() => accelerationHotspot(events, HEAT_NODES), [events]);
   const picoVelocidade = useMemo(() => topSpeedLocation(events, HEAT_NODES), [events]);
+  const frenagemPorPiloto = useMemo(() => brakingHotspotsByDriver(events, HEAT_NODES), [events]);
+  const aceleracaoPorPiloto = useMemo(() => accelerationHotspotsByDriver(events, HEAT_NODES), [events]);
   const consistencia = useMemo(() => lapConsistency(lapResults), [lapResults]);
+  const mapaInsights = useMemo(() => [
+    hotspotFrenagem && {referencePoint: hotspotFrenagem.referencePoint, color: '#f5454b', label: 'Freio'},
+    hotspotAceleracao && {referencePoint: hotspotAceleracao.referencePoint, color: '#33dc7d', label: 'Aceleração'},
+    picoVelocidade && {referencePoint: picoVelocidade.referencePoint, color: '#3491ff', label: 'Velocidade'},
+  ].filter((m): m is {referencePoint: number; color: string; label: string} => Boolean(m)), [hotspotFrenagem, hotspotAceleracao, picoVelocidade]);
   const liveLoading = live.isLoading || liveOtel.isLoading;
   const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
   // Volta de referência: a mais rápida do período. As amostras dela viram um
@@ -424,15 +432,41 @@ export const Dashboard = () => {
         <div><span className="eyebrow">ZONA DE MAIOR FRENAGEM</span><p>Intensidade média de freio por trecho do traçado</p></div>
         <strong>{hotspotFrenagem ? number(hotspotFrenagem.avgBrakePct,0) : '—'}{hotspotFrenagem && <small>%</small>}</strong>
         <p className="muted">{hotspotFrenagem ? `Perto do ponto de referência ${String(hotspotFrenagem.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com freio e posição'}</p>
-        <div className="kpi-line blue"/>
+        <div className="kpi-line" style={{background:'#f5454b'}}/>
+      </div>
+      <div className="panel kpi">
+        <div><span className="eyebrow">ZONA DE MAIOR ACELERAÇÃO</span><p>Intensidade média de aceleração por trecho do traçado</p></div>
+        <strong>{hotspotAceleracao ? hotspotAceleracao.avgG.toFixed(2) : '—'}{hotspotAceleracao && <small>g</small>}</strong>
+        <p className="muted">{hotspotAceleracao ? `Perto do ponto de referência ${String(hotspotAceleracao.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com aceleração e posição'}</p>
+        <div className="kpi-line" style={{background:'#33dc7d'}}/>
       </div>
       <div className="panel kpi">
         <div><span className="eyebrow">PICO DE VELOCIDADE</span><p>Maior leitura válida do período</p></div>
         <strong>{picoVelocidade ? number(picoVelocidade.speedKmh,1) : '—'}{picoVelocidade && <small>km/h</small>}</strong>
-        <p className="muted">{picoVelocidade ? `Perto do ponto de referência ${String(picoVelocidade.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com velocidade e posição'}</p>
-        <div className="kpi-line purple"/>
+        <p className="muted">{picoVelocidade ? `${picoVelocidade.driverName ?? 'Piloto sem nome'} · ponto de referência ${String(picoVelocidade.referencePoint).padStart(2,'0')}` : 'Aguardando telemetria com velocidade e posição'}</p>
+        <div className="kpi-line blue"/>
       </div>
     </section>
+    <section className="panel track-panel insights-map-panel">
+      <div className="panel-heading"><div><span className="eyebrow">MAPA DOS DESTAQUES</span><Heading level={3}>Onde cada observação aconteceu</Heading></div></div>
+      {mapaInsights.length
+        ? <InsightsMap markers={mapaInsights}/>
+        : <p className="muted" role="status">Aguardando telemetria com posição para localizar os destaques no traçado.</p>}
+    </section>
+    <div className="hero-grid intelligence-grid">
+      <section className="panel leaderboard">
+        <div className="panel-heading"><div><span className="eyebrow">FRENAGEM</span><Heading level={3}>Zona mais forte, por piloto</Heading></div></div>
+        {frenagemPorPiloto.length
+          ? <ul className="consistencia-lista">{frenagemPorPiloto.slice(0,5).map(d => <li key={d.driverName}><span className="consistencia-nome">{d.driverName}</span><span className="muted">ponto {String(d.referencePoint).padStart(2,'0')}</span><strong>{number(d.avgValue,0)}%</strong></li>)}</ul>
+          : <p className="muted" role="status">Aguardando telemetria de freio com piloto identificado.</p>}
+      </section>
+      <section className="panel leaderboard">
+        <div className="panel-heading"><div><span className="eyebrow">ACELERAÇÃO</span><Heading level={3}>Zona mais forte, por piloto</Heading></div></div>
+        {aceleracaoPorPiloto.length
+          ? <ul className="consistencia-lista">{aceleracaoPorPiloto.slice(0,5).map(d => <li key={d.driverName}><span className="consistencia-nome">{d.driverName}</span><span className="muted">ponto {String(d.referencePoint).padStart(2,'0')}</span><strong>{d.avgValue.toFixed(2)} g</strong></li>)}</ul>
+          : <p className="muted" role="status">Aguardando telemetria de aceleração com piloto identificado.</p>}
+      </section>
+    </div>
     <section className="panel leaderboard">
       <div className="panel-heading"><div><span className="eyebrow">CONSISTÊNCIA</span><Heading level={3}>Volta a volta, por piloto</Heading></div></div>
       <p className="muted">Desvio padrão do tempo de volta de quem completou pelo menos duas voltas no período - menor é mais consistente. Uma volta só não entra: desvio de uma amostra não diz nada.</p>

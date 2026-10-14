@@ -455,7 +455,7 @@ export function brakingHotspot(events: Telemetry[], nodes: number[][]): BrakingH
   return best < 0 ? null : { referencePoint: nearestReferencePoint(best, nodes.length), avgBrakePct: bestAvg };
 }
 
-export interface TopSpeed { speedKmh: number; referencePoint: number; }
+export interface TopSpeed { speedKmh: number; referencePoint: number; driverName: string | null; }
 
 // Maior velocidade válida do período (já passou pelo corte de teletransporte
 // em parseEvents) e o ponto de referência mais próximo de onde ocorreu.
@@ -467,8 +467,60 @@ export function topSpeedLocation(events: Telemetry[], nodes: number[][]): TopSpe
   }
   if (!best) return null;
   const i = nearestNode(best.pos_x!, best.pos_y!, nodes);
-  return i < 0 ? null : { speedKmh: best.speed_kmh!, referencePoint: nearestReferencePoint(i, nodes.length) };
+  return i < 0 ? null : { speedKmh: best.speed_kmh!, referencePoint: nearestReferencePoint(i, nodes.length), driverName: best.driver_name ?? null };
 }
+
+export interface AccelerationHotspot { referencePoint: number; avgG: number; }
+
+// Trecho do traçado com a aceleração média mais forte no período (mesmo
+// binning por nó mais próximo do brakingHotspot, isolado na métrica de g).
+export function accelerationHotspot(events: Telemetry[], nodes: number[][]): AccelerationHotspot | null {
+  const bins = nodes.map(() => ({ sum: 0, count: 0 }));
+  for (const e of events) {
+    if (!finite(e.pos_x) || !finite(e.pos_y) || !finite(e.acceleration_g)) continue;
+    const i = nearestNode(e.pos_x, e.pos_y, nodes);
+    if (i >= 0) { bins[i].sum += e.acceleration_g; bins[i].count++; }
+  }
+  let best = -1, bestAvg = -Infinity;
+  bins.forEach((bin, i) => {
+    if (!bin.count) return;
+    const avg = bin.sum / bin.count;
+    if (avg > bestAvg) { bestAvg = avg; best = i; }
+  });
+  return best < 0 ? null : { referencePoint: nearestReferencePoint(best, nodes.length), avgG: bestAvg };
+}
+
+export interface DriverZone { driverName: string; referencePoint: number; avgValue: number; }
+
+// Mesma lógica de brakingHotspot/accelerationHotspot, mas uma zona por
+// piloto em vez de uma só global — para comparar onde CADA piloto freia ou
+// acelera mais forte, não só o trecho mais puxado da pista como um todo.
+function hotspotsByDriver(events: Telemetry[], nodes: number[][], metric: 'brake_pct' | 'acceleration_g'): DriverZone[] {
+  const byDriver = new Map<string, { sum: number; count: number }[]>();
+  for (const e of events) {
+    const value = e[metric];
+    if (!e.driver_name || !finite(e.pos_x) || !finite(e.pos_y) || !finite(value)) continue;
+    const i = nearestNode(e.pos_x, e.pos_y, nodes);
+    if (i < 0) continue;
+    let bins = byDriver.get(e.driver_name);
+    if (!bins) { bins = nodes.map(() => ({ sum: 0, count: 0 })); byDriver.set(e.driver_name, bins); }
+    bins[i].sum += value; bins[i].count++;
+  }
+  const result: DriverZone[] = [];
+  for (const [driverName, bins] of byDriver) {
+    let best = -1, bestAvg = -Infinity;
+    bins.forEach((bin, i) => {
+      if (!bin.count) return;
+      const avg = bin.sum / bin.count;
+      if (avg > bestAvg) { bestAvg = avg; best = i; }
+    });
+    if (best >= 0) result.push({ driverName, referencePoint: nearestReferencePoint(best, nodes.length), avgValue: bestAvg });
+  }
+  return result.sort((a, b) => b.avgValue - a.avgValue);
+}
+
+export function brakingHotspotsByDriver(events: Telemetry[], nodes: number[][]): DriverZone[] { return hotspotsByDriver(events, nodes, 'brake_pct'); }
+export function accelerationHotspotsByDriver(events: Telemetry[], nodes: number[][]): DriverZone[] { return hotspotsByDriver(events, nodes, 'acceleration_g'); }
 
 export interface LapConsistency { driverName: string; stdDevSeconds: number; laps: number; }
 

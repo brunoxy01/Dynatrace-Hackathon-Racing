@@ -56,4 +56,10 @@
 .consistencia-lista{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
 .consistencia-lista li{display:flex;align-items:center;gap:14px;padding:10px 14px;border:1px solid var(--line);border-radius:8px}
 .consistencia-nome{font-weight:600;flex:1}
+.intelligence-kpis{grid-template-columns:repeat(3,1fr)}
 .intelligence-kpis .kpi p:first-of-type{min-height:32px}
+.insights-map-panel{margin-top:24px}
+.insights-map{width:100%;height:260px;display:block;overflow:visible;margin-top:8px}
+.intelligence-grid{grid-template-columns:1fr 1fr;margin-top:24px}
+.intelligence-grid .leaderboard{margin-top:0}
+@media(max-width:1080px){.intelligence-kpis{grid-template-columns:1fr}.intelligence-grid{grid-template-columns:1fr}}
