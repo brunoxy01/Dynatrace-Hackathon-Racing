@@ -1,4 +1,4 @@
-# Interface Dynatrace Hackathon Racing
+# Interface Dynatrace Racing
 
 Consulte o [README principal](../README.md) para contexto do evento, prints, origem dos dados e operação dos simuladores.
 

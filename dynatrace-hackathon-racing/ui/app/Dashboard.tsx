@@ -505,7 +505,7 @@ export const Dashboard = () => {
 
   return <main className="racing-app" style={{color: Colors.Text.Neutral.Default, background: Colors.Background.Base.Default}}>
     <header className="app-heading">
-      <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Hackathon Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Hackathon Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div>
+      <div className="identity"><img src="./assets/racing-logo.png" alt="Logo Dynatrace Racing" /><div><span className="eyebrow">DYNATRACE · LIVE EXPERIENCE</span><Heading level={1}>Dynatrace Racing</Heading><p>Da pista aos dados. Cada curva conta.</p></div>
         {/* Mesmo efeito de borda/brilho do painel do mapa (.track-panel), em
             verde e amarelo em vez de roxo — o selo do Brasil, sede do evento. */}
         <svg className="flag-br" viewBox="0 0 70 70" role="img" aria-label="Brasil">
@@ -539,6 +539,6 @@ export const Dashboard = () => {
     <Tabs selectedIndex={abaAtual} onChange={i => changeMode(abas[i].id)}>
       {abas.map(aba => <Tab key={aba.id} title={aba.title}>{mode === aba.id ? corpo[aba.id] : null}</Tab>)}
     </Tabs>
-    <footer className="page-footer"><span>Dynatrace Hackathon Racing</span><span>{mode === 'stream' ? 'Fonte: script local · sem ingestão' : mode === 'replay' ? 'Fonte: Grail · uma volta reproduzida em tempo real a partir das amostras gravadas' : 'Fonte: Grail · racing.telemetry · período selecionado'}</span></footer>
+    <footer className="page-footer"><span>Dynatrace Racing</span><span>{mode === 'stream' ? 'Fonte: script local · sem ingestão' : mode === 'replay' ? 'Fonte: Grail · uma volta reproduzida em tempo real a partir das amostras gravadas' : 'Fonte: Grail · racing.telemetry · período selecionado'}</span></footer>
   </main>;
 };
