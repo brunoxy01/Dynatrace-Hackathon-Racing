@@ -75,7 +75,7 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
       <circle className="marker-halo" r="12" fill="#1496ff" opacity=".18"/>
       <circle r={iniciais ? 10 : 5.5} fill="#fff" stroke="#172936" strokeWidth="2"/>
       {iniciais && <text textAnchor="middle" dominantBaseline="central" fontSize="8.5" fontWeight="700" fill="#172936">{iniciais}</text>}
-      <title>{car.driver_name ?? 'Piloto'} · {car.company_name ?? 'Sem empresa'} · {number(car.speed_kmh,1)} km/h</title>
+      <title>{car.driver_name ?? 'Piloto'} · {number(car.speed_kmh,1)} km/h</title>
     </g>;
   })}</>;
 }

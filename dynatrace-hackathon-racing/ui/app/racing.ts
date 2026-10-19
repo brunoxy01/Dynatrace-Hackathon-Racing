@@ -5,7 +5,6 @@ export interface Telemetry {
   'rig.id': string;
   'session.id': string;
   'sample.id'?: string | null;
-  company_name?: string | null;
   source?: string | null;
   speed_kmh: number | null;
   acceleration_g: number | null;
@@ -54,7 +53,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     const posX = num('pos_x'), posY = num('pos_y');
     const semPosicaoReal = posX === 0 && posY === 0;
     return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
-      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), company_name:str('company_name'), source:str('source'),
+      'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
@@ -212,22 +211,11 @@ export function lapsByTime(laps: Telemetry[]): Telemetry[] {
     .sort((a,b) => a.last_lap_s! - b.last_lap_s!);
 }
 
-// Pódio de empresas: a volta mais rápida de cada uma. Recebe as voltas já
-// ordenadas por tempo, então a primeira ocorrência de cada empresa já é a
-// melhor dela — sem passar por um "melhor de cada piloto" no meio, que era
-// onde a volta certa se perdia quando o mesmo piloto tinha várias.
-export function companyPodium(lapsSortedByTime: Telemetry[], size: number): Telemetry[] {
-  const melhor = new Map<string, Telemetry>();
-  for (const lap of lapsSortedByTime) {
-    if (lap.company_name && !melhor.has(lap.company_name)) melhor.set(lap.company_name, lap);
-  }
-  return [...melhor.values()].slice(0, size);
-}
-
-// Pódio de pilotos: mesma ideia do companyPodium, mas agrupado por nome do
-// piloto (não por driverKey) — um piloto que trocou de simulador ou reiniciou
-// a sessão entre voltas continua sendo UMA pessoa só no pódio, igual ao
-// lapConsistency já faz.
+// Pódio de pilotos: a volta mais rápida de cada um, agrupado por nome (não
+// por driverKey) — um piloto que trocou de simulador ou reiniciou a sessão
+// entre voltas continua sendo UMA pessoa só no pódio, igual ao lapConsistency
+// já faz. Recebe as voltas já ordenadas por tempo, então a primeira
+// ocorrência de cada piloto já é a melhor dele.
 export function driverPodium(lapsSortedByTime: Telemetry[], size: number): Telemetry[] {
   const melhor = new Map<string, Telemetry>();
   for (const lap of lapsSortedByTime) {

@@ -79,7 +79,6 @@ jobs:
           # Quem esta na cadeira. Preenchido aqui, vence o nome do perfil do
           # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
           driver_name =
-          company_name =
           ams2_port = 5606
           sink = both
           # Quanto o rig segura as amostras antes de enviar. Menor =

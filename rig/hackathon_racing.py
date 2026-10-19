@@ -106,7 +106,6 @@ def carregar_config(caminho: Path) -> dict:
         "rig_id": os.environ.get("RIG_ID", "rig-01"),
         "rig_name": os.environ.get("RIG_NAME", "Simulador 1"),
         "driver_name": os.environ.get("RACING_DRIVER", ""),
-        "company_name": os.environ.get("RACING_COMPANY", ""),
         "dt_env_url": os.environ.get("DT_ENV_URL", ""),
         "dt_api_token": os.environ.get("DT_API_TOKEN", ""),
         "ams2_port": os.environ.get("AMS2_PORT", "5606"),
@@ -253,7 +252,7 @@ def main() -> int:
     print("=" * 58)
     print(f"  Hackathon Racing - {config['rig_id']} ({config['rig_name']})")
     if config["driver_name"]:
-        print(f"  Piloto: {config['driver_name']} / {config['company_name'] or 'sem empresa'}")
+        print(f"  Piloto: {config['driver_name']}")
     print(f"  UDP do AMS2: porta {porta}   |   destinos: {config['sink']}")
     print("=" * 58)
 
@@ -291,7 +290,7 @@ def main() -> int:
     # que o CLI dele produz.
     opcoes = argparse.Namespace(
         source="udp", rig_id=config["rig_id"], rig_name=config["rig_name"],
-        driver_name=config["driver_name"] or None, company_name=config["company_name"] or None,
+        driver_name=config["driver_name"] or None,
         bind="0.0.0.0", port=porta,
         batch_size=int(config["batch_size"]), flush_interval=float(config["flush_interval"]),
         endpoint=config["dt_env_url"] or None, token=config["dt_api_token"] or None,

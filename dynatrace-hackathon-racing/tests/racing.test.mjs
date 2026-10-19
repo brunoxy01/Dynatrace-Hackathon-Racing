@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -77,19 +77,19 @@ test('ranking is one row per lap, fastest first, not one per driver', () => {
 test('ranking drops laps without a usable time', () => {
   assert.equal(lapsByTime([{...sample, last_lap_s:null}, {...sample, last_lap_s:0}]).length, 0);
 });
-test('company podium takes the fastest lap of each company, not of each driver', () => {
-  // O caso relatado: o Bruno tem uma volta lenta e uma média; o Plinio tem a
-  // mais rápida da Dynatrace. O pódio tem de mostrar a do Plinio.
+test('driver podium takes the fastest lap of each driver, not the first one listed', () => {
+  // O caso relatado: o Bruno tem uma volta lenta e uma média antes da rápida.
+  // O pódio tem de mostrar a mais rápida dele, não a primeira na lista.
   const voltas = lapsByTime([
-    {...sample, driver_name:'Bruno', company_name:'Dynatrace', last_lap_s:143.0},
-    {...sample, driver_name:'Plinio', company_name:'Dynatrace', last_lap_s:97.4},
-    {...sample, driver_name:'Bruno', company_name:'Dynatrace', last_lap_s:120.0},
-    {...sample, driver_name:'Ana', company_name:'Bradesco', last_lap_s:110.0},
-    {...sample, driver_name:'Sem empresa', company_name:null, last_lap_s:90.0},
+    {...sample, driver_name:'Bruno', last_lap_s:143.0},
+    {...sample, driver_name:'Plinio', last_lap_s:97.4},
+    {...sample, driver_name:'Bruno', last_lap_s:120.0},
+    {...sample, driver_name:'Ana', last_lap_s:110.0},
+    {...sample, driver_name:null, last_lap_s:90.0},
   ]);
-  const podio = companyPodium(voltas, 3);
-  assert.deepEqual(podio.map(l => [l.company_name, l.driver_name, l.last_lap_s]),
-    [['Dynatrace', 'Plinio', 97.4], ['Bradesco', 'Ana', 110.0]]);
+  const podio = driverPodium(voltas, 3);
+  assert.deepEqual(podio.map(l => [l.driver_name, l.last_lap_s]),
+    [['Plinio', 97.4], ['Ana', 110.0], ['Bruno', 120.0]]);
 });
 test('the lap window ends at the close and reaches back one lap time', () => {
   // A volta fechou às 00:01:44 e durou 104,015s. A margem é assimétrica: folga

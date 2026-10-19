@@ -26,10 +26,11 @@ const CORES_PODIO = ['#d4af37', '#9aa5b1', '#cd7f32'];
 function Capacete({posicao}: {posicao: number}) {
   const cor = CORES_PODIO[posicao - 1];
   if (!cor) return null;
-  return <svg className="capacete-brilho" viewBox="0 0 32 32" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
-    <path d="M16 4c7.2 0 12 5.1 12 12.2V21a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4.8C4 9.1 8.8 4 16 4z" fill={cor}/>
-    <rect x="8" y="12.5" width="16" height="4" rx="2" fill="#20262e" opacity=".45"/>
-    <path d="M4 20.5h24V21a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-.5z" fill="#20262e" opacity=".55"/>
+  // Perfil lateral (de lado), olhando para a direita: calota + viseira
+  // inclinada + queixeira, em vez da vista frontal de antes.
+  return <svg className="capacete-brilho" viewBox="0 0 36 30" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
+    <path d="M2 18C1 10 7 3 16 2c8-1 15 3 17 10 1 4-1 7-4 8l-1 2c-1 3-3 4-6 4H11c-5 0-9-3-9-8z" fill={cor}/>
+    <path d="M19 12c5-.5 9 1.5 11 6 .5 1.3-.1 2.7-1.4 3.1l-9.2 2.7c-1.4-3.4-2-8.4-.4-11.8z" fill="#20262e" opacity=".55"/>
   </svg>;
 }
 function Posicao({posicao}: {posicao: number}) {
@@ -53,7 +54,7 @@ const TABS = [
   {id: 'intelligence', title: 'Dynatrace Intelligence'},
   {id: 'stream', title: 'Script local'},
 ];
-const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, company_name, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
+const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
 // Duas fontes independentes para a mesma telemetria: a API de business events
 // (ams2_collector.py --sink bizevents) e os logs OTLP que o OTel Collector do rig
 // entrega (--sink otlp). Queries separadas de propósito: se o pipeline OTel ainda
@@ -82,8 +83,7 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     timestamp = min(timestamp),
     lap_number = min(lap_number),
     driver_name = takeAny(driver_name),
-    car_name = takeAny(car_name),
-    company_name = takeAny(company_name)
+    car_name = takeAny(car_name)
   }, by: {\`rig.id\`, \`session.id\`, last_lap_s}
 | sort timestamp desc
 | limit 5000`;
@@ -133,7 +133,6 @@ const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
-  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 140 },
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
@@ -161,7 +160,6 @@ export const Dashboard = () => {
   const [playing, setPlaying] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState('all');
-  const [filtroEmpresa, setFiltroEmpresa] = useState('all');
   const [filtroRig, setFiltroRig] = useState('all');
   const [timeframe, setTimeframe] = useState({from:'now()-7d',to:'now()'});
   const [queryTime, setQueryTime] = useState(Date.now());
@@ -268,11 +266,9 @@ export const Dashboard = () => {
   // do período escolhido. A mais recente primeiro.
   const laps = useMemo(() => lapResults
     .filter(l => selected === 'all' || driverKey(l) === selected)
-    .filter(l => filtroEmpresa === 'all' || (l.company_name ?? 'Não informada') === filtroEmpresa)
     .filter(l => filtroRig === 'all' || l['rig.id'] === filtroRig)
-    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroEmpresa, filtroRig]);
+    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroRig]);
   const ranking = useMemo<Ranked[]>(() => lapsByTime(lapResults).map((l,i) => ({...l, position: i+1})), [lapResults]);
-  const opcoesEmpresa = useMemo(() => [...new Set(lapResults.map(l => l.company_name ?? 'Não informada'))].sort(), [lapResults]);
   const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
   const peak = Math.max(0, ...events.map(e => finite(e.speed_kmh) ? e.speed_kmh : 0));
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
@@ -356,7 +352,7 @@ export const Dashboard = () => {
   })();
   const changeMode = (value: string) => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);
-    setSelected('all'); setFiltroEmpresa('all'); setFiltroRig('all');
+    setSelected('all'); setFiltroRig('all');
   };
   // O tempo da volta É o botão: clicar nele reproduz aquela volta. Uma coluna
   // separada de ação duplicaria o alvo de clique sem dizer nada a mais.
@@ -366,7 +362,6 @@ export const Dashboard = () => {
     { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
       cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
     { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
-    { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? 'Não informada', minWidth: 130 },
     { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   ], []);
   const abas = TABS.filter(t => t.id !== 'stream' || isLocal);
@@ -381,14 +376,14 @@ export const Dashboard = () => {
   </section>;
 
   const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
-    <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="small-tag">{focus?.company_name ?? 'Empresa não informada'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
+    <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
     <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{subtitulo}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span><strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong></div></section>
   </div>;
 
   // Por ora, pódio de pilotos em vez de empresas (pedido explícito) - mesma
   // estrutura visual, só troca a fonte do ranking.
   const podioEmpresas = <><div className="section-title"><Heading level={2}>Disputa entre pilotos</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
-    <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].company_name ?? pilotosPodio[i].car_name ?? 'Empresa não informada') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
+    <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].car_name ?? 'Carro não informado') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
     <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
@@ -437,7 +432,6 @@ export const Dashboard = () => {
       <Flex alignItems="center" gap={8} flexWrap="wrap" className="filtros-replay">
         <span className="muted">Filtrar por</span>
         <Select aria-label="Filtrar por piloto" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{lapDrivers.map(l => <Select.Option key={driverKey(l)} value={driverKey(l)}>{l.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>
-        <Select aria-label="Filtrar por empresa" value={filtroEmpresa} onChange={v => setFiltroEmpresa(v ?? 'all')}><Select.Content><Select.Option value="all">Todas as empresas</Select.Option>{opcoesEmpresa.map(e => <Select.Option key={e} value={e}>{e}</Select.Option>)}</Select.Content></Select>
         <Select aria-label="Filtrar por simulador" value={filtroRig} onChange={v => setFiltroRig(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os simuladores</Select.Option>{opcoesRig.map(r => <Select.Option key={r} value={r}>{r}</Select.Option>)}</Select.Content></Select>
       </Flex>
       <DataTable data={laps} columns={replayColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado. Amplie o intervalo.</DataTable.EmptyState></DataTable>

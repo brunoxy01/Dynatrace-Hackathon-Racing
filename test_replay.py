@@ -30,7 +30,7 @@ class ReplayTests(unittest.TestCase):
         grid = demo_grid(recorded_lap(rows))
         self.assertEqual(len(grid), 8324)
         self.assertEqual(len({r['rig.id'] for r in grid}), 4)
-        self.assertEqual({r['company_name'] for r in grid if r['source'] == 'demo'}, {'Dynatrace', 'Bradesco', 'Caixa'})
+        self.assertEqual({r['driver_name'] for r in grid if r['source'] == 'demo'}, {'Bruno Lima', 'Joãozinho', 'Agnes'})
         self.assertEqual(len({r['last_lap_s'] for r in grid if r.get('last_lap_s')}), 4)
         self.assertTrue(all(r.get('simulation') for r in grid if r['source'] == 'demo'))
         self.assertEqual([r['timestamp'] for r in grid], sorted(r['timestamp'] for r in grid))
