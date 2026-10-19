@@ -26,11 +26,17 @@ const CORES_PODIO = ['#d4af37', '#9aa5b1', '#cd7f32'];
 function Capacete({posicao}: {posicao: number}) {
   const cor = CORES_PODIO[posicao - 1];
   if (!cor) return null;
-  // Perfil lateral (de lado), olhando para a direita: calota + viseira
-  // inclinada + queixeira, em vez da vista frontal de antes.
-  return <svg className="capacete-brilho" viewBox="0 0 36 30" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
-    <path d="M2 18C1 10 7 3 16 2c8-1 15 3 17 10 1 4-1 7-4 8l-1 2c-1 3-3 4-6 4H11c-5 0-9-3-9-8z" fill={cor}/>
-    <path d="M19 12c5-.5 9 1.5 11 6 .5 1.3-.1 2.7-1.4 3.1l-9.2 2.7c-1.4-3.4-2-8.4-.4-11.8z" fill="#20262e" opacity=".55"/>
+  // Perfil lateral (de lado), olhando para a direita: calota arredondada,
+  // entrada de ar no topo, friso diagonal, viseira grande com o pino do
+  // visor e uma faixa de corrida embaixo — mesma composição de um capacete
+  // de corrida visto de lado.
+  return <svg className="capacete-brilho" viewBox="0 0 100 80" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
+    <path d="M14 40C14 19 32 7 54 7c20 0 36 10 40 26 2 6-2 11-8 12-3 9-11 16-21 16H45C23 61 14 55 14 40z" fill={cor}/>
+    <path d="M23 24c6-6 18-7 23-2-7 4-15 7-22 9-2-2-3-5-1-7z" fill="#20262e" opacity=".6"/>
+    <path d="M30 35 83 19l3 7-50 17z" fill="#20262e" opacity=".6"/>
+    <path d="M34 43 88 30c2 6-1 12-6 16L49 58c-10 1-16-6-15-15z" fill="#20262e" opacity=".6"/>
+    <circle cx="51" cy="47" r="3.6" fill={cor}/>
+    <path d="M40 58l44-15c-2 4-5 7-9 9L50 61c-4 1-8 0-10-3z" fill="#20262e" opacity=".35"/>
   </svg>;
 }
 function Posicao({posicao}: {posicao: number}) {
