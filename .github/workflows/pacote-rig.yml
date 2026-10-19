@@ -56,6 +56,11 @@ jobs:
 
       - name: Montar o pacote
         shell: pwsh
+        env:
+          # Secret do repositorio (Settings > Secrets > Actions). Nunca vai
+          # para o texto do workflow nem para os logs - so' para dentro do
+          # racing.ini do pacote, que e' anexado na release publica.
+          DT_API_TOKEN_EVENTO: ${{ secrets.DT_API_TOKEN_EVENTO }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path pacote/motor | Out-Null
@@ -81,8 +86,8 @@ jobs:
           # mapa mais perto do tempo real, mais requisicoes por segundo.
           batch_size = 10
           flush_interval = 1.0
-          dt_env_url = https://SEU_AMBIENTE.live.dynatrace.com
-          dt_api_token = COLE_O_TOKEN_AQUI
+          dt_env_url = https://bwm98081.live.dynatrace.com
+          dt_api_token = $env:DT_API_TOKEN_EVENTO
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini
           Compress-Archive -Path pacote/* -DestinationPath HackathonRacing-rig-windows.zip -Force
 
