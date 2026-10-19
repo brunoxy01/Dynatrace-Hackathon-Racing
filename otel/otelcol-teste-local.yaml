@@ -25,7 +25,7 @@ processors:
   batch:
     send_batch_size: 200
     send_batch_max_size: 500
-    timeout: 5s
+    timeout: 2s
 
 exporters:
   debug:

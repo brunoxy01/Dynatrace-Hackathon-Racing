@@ -417,7 +417,11 @@ def main() -> int:
     parser.add_argument("--loop", action="store_true", help="[replay] repete o arquivo indefinidamente")
     parser.add_argument("--speed", type=float, default=1.0, help="[replay] multiplicador de velocidade (0 = o mais rapido possivel, sem pausas)")
     parser.add_argument("--batch-size", type=int, default=10)
-    parser.add_argument("--flush-interval", type=float, default=1.0, help="segundos entre envios ao Dynatrace")
+    # Era 1.0s - metade do caminho de ponta a ponta até o mapa "parecer" ao
+    # vivo é esta espera mais o timeout do batch do OTel Collector (ver
+    # otel/otelcol-racing.yaml). Baixar os dois reduz o atraso percebido; o
+    # resto (ingestão e indexação no Grail) não é configurável por aqui.
+    parser.add_argument("--flush-interval", type=float, default=0.5, help="segundos entre envios ao Dynatrace")
     parser.add_argument(
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",

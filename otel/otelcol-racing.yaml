@@ -26,9 +26,13 @@ processors:
     spike_limit_mib: 64
 
   batch:
+    # timeout era 5s - esse era o maior atraso configurável de toda a cadeia
+    # (rig -> este collector -> Dynatrace). 2s ainda agrupa bem a 20 Hz e
+    # corta 3s do atraso percebido no mapa. A ingestão/indexação no Grail em
+    # si não é afetada por isto - é inerente à plataforma.
     send_batch_size: 200
     send_batch_max_size: 500
-    timeout: 5s
+    timeout: 2s
 
 extensions:
   # Fila em disco: se a rede do evento cair, as amostras ficam guardadas e sao

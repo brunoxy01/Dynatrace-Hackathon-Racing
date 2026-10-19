@@ -113,7 +113,7 @@ def carregar_config(caminho: Path) -> dict:
         # Quanto o rig segura as amostras antes de enviar. Baixar isto aproxima
         # o mapa do tempo real ao custo de mais requisicoes HTTPS por segundo.
         "batch_size": os.environ.get("RACING_BATCH_SIZE", "10"),
-        "flush_interval": os.environ.get("RACING_FLUSH_INTERVAL", "1.0"),
+        "flush_interval": os.environ.get("RACING_FLUSH_INTERVAL", "0.5"),
     }
     if caminho.exists():
         parser = configparser.ConfigParser()

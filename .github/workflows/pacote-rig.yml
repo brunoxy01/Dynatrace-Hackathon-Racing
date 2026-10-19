@@ -84,7 +84,7 @@ jobs:
           # Quanto o rig segura as amostras antes de enviar. Menor =
           # mapa mais perto do tempo real, mais requisicoes por segundo.
           batch_size = 10
-          flush_interval = 1.0
+          flush_interval = 0.5
           dt_env_url = https://bwm98081.live.dynatrace.com
           dt_api_token = $env:DT_API_TOKEN_EVENTO
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini
