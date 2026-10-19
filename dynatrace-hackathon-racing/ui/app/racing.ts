@@ -224,6 +224,18 @@ export function companyPodium(lapsSortedByTime: Telemetry[], size: number): Tele
   return [...melhor.values()].slice(0, size);
 }
 
+// Pódio de pilotos: mesma ideia do companyPodium, mas agrupado por nome do
+// piloto (não por driverKey) — um piloto que trocou de simulador ou reiniciou
+// a sessão entre voltas continua sendo UMA pessoa só no pódio, igual ao
+// lapConsistency já faz.
+export function driverPodium(lapsSortedByTime: Telemetry[], size: number): Telemetry[] {
+  const melhor = new Map<string, Telemetry>();
+  for (const lap of lapsSortedByTime) {
+    if (lap.driver_name && !melhor.has(lap.driver_name)) melhor.set(lap.driver_name, lap);
+  }
+  return [...melhor.values()].slice(0, size);
+}
+
 // Janela de tempo que contém uma volta, para buscar as amostras dela no Grail.
 // O registro da volta traz o instante em que ela FECHOU e quanto durou, então a
 // volta é o intervalo que termina ali. A margem cobre as duas pontas: o

@@ -19,21 +19,25 @@
 @keyframes beating{0%{box-shadow:0 0 0 0 #2eb77d55}70%{box-shadow:0 0 0 7px #2eb77d00}100%{box-shadow:0 0 0 0 #2eb77d00}}
 .status-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 
-/* Medalhas das três primeiras posições, na tabela e no pódio de empresas. */
+/* Capacetes das três primeiras posições, na tabela e no pódio de pilotos. */
 .posicao{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
-.medalha{font-size:15px;line-height:1}
+.capacete-brilho{width:15px;height:15px;flex-shrink:0;animation:capacete-pulso 2.2s ease-in-out infinite alternate}
 .place .posicao{font-size:28px;font-weight:300;letter-spacing:-1px}
-.place .medalha{font-size:24px}
+.place .capacete-brilho{width:26px;height:26px}
+@keyframes capacete-pulso{
+  from{filter:drop-shadow(0 0 2px var(--capacete-cor)) drop-shadow(0 0 3px var(--capacete-cor))}
+  to{filter:drop-shadow(0 0 5px var(--capacete-cor)) drop-shadow(0 0 9px var(--capacete-cor))}
+}
 
 /* Delta contra a melhor volta, no estilo das transmissões: verde à frente. */
 .delta-ganhando{color:#3ec98a}
 .delta-perdendo{color:#e2717d}
 
 /* Top 3 da tabela: destaque mais forte que o resto - fonte maior e uma
-   pílula com a cor da própria medalha (dourado/prata/bronze), no espírito do
+   pílula com a cor do próprio capacete (dourado/prata/bronze), no espírito do
    brilho que o painel da pista usa. As posições 04..10 só centralizam: a
    coluna já usa alignment:'center' no Strato, isto centra o conteúdo interno
-   (medalha+número) dentro da célula. */
+   (capacete+número) dentro da célula. */
 .posicao{justify-content:center}
 .posicao-1,.posicao-2,.posicao-3{font-size:15px;font-weight:700;padding:3px 11px;border-radius:14px}
 .posicao-1{background:#d4af3722;border:1px solid #d4af3766;box-shadow:inset 0 0 10px #d4af3722}

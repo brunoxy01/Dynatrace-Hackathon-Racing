@@ -12,18 +12,29 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, companyPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
 const isLocal = window.location.hostname === 'localhost';
-// O Strato não tem ícone de medalha (conferido: 846 ícones, nenhum serve), e
-// emoji é o que renderiza as três cores de verdade em qualquer plataforma.
-const MEDALHAS = ['🥇', '🥈', '🥉'];
-const medalha = (posicao: number) => MEDALHAS[posicao - 1] ?? null;
+// O Strato não tem ícone de capacete (mesma lacuna já conferida pra medalha:
+// 846 ícones, nenhum serve) — SVG próprio, nas mesmas cores de ouro/prata/
+// bronze já usadas nas pills .posicao-1/2/3, com o mesmo efeito de brilho da
+// borda do mapa da pista (drop-shadow pulsante em vez do conic-gradient, que
+// não faz sentido numa forma sólida pequena).
+const CORES_PODIO = ['#d4af37', '#9aa5b1', '#cd7f32'];
+function Capacete({posicao}: {posicao: number}) {
+  const cor = CORES_PODIO[posicao - 1];
+  if (!cor) return null;
+  return <svg className="capacete-brilho" viewBox="0 0 32 32" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
+    <path d="M16 4c7.2 0 12 5.1 12 12.2V21a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4.8C4 9.1 8.8 4 16 4z" fill={cor}/>
+    <rect x="8" y="12.5" width="16" height="4" rx="2" fill="#20262e" opacity=".45"/>
+    <path d="M4 20.5h24V21a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-.5z" fill="#20262e" opacity=".55"/>
+  </svg>;
+}
 function Posicao({posicao}: {posicao: number}) {
-  const icone = medalha(posicao);
-  return <span className={`posicao${icone ? ` posicao-${posicao}` : ''}`}>{icone && <span className="medalha" aria-hidden="true">{icone}</span>}{String(posicao).padStart(2, '0')}</span>;
+  const temCapacete = posicao <= 3;
+  return <span className={`posicao${temCapacete ? ` posicao-${posicao}` : ''}`}>{temCapacete && <Capacete posicao={posicao}/>}{String(posicao).padStart(2, '0')}</span>;
 }
 // O delta usa o traçado COMPLETO, não os pontos ralos do desenho: com 467
 // pontos o erro de uma volta contra ela mesma cai de 2,2s para 1,0s.
@@ -177,10 +188,14 @@ export const Dashboard = () => {
   // A lista de voltas alimenta tanto o drill down do modo ao vivo quanto a
   // escolha da volta a reproduzir, então vale nos dois modos.
   const periodEnabled = mode !== 'stream' && Boolean(lapBounds.from && lapBounds.to);
-  const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
-  const liveOtel = useDql<Telemetry>({ query: QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled });
-  const liveLaps = useDql<Telemetry>({ query: QUERY_LAPS, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled });
-  const liveLapsOtel = useDql<Telemetry>({ query: QUERY_LAPS_OTEL, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled });
+  // staleTime:0 - sem isto, o refetch (automático a cada 5s/15s OU o clique
+  // em "Atualizar") podia ser ignorado pelo hook quando o resultado anterior
+  // ainda não tinha "envelhecido" o suficiente (padrão do useDql: 60s). Num
+  // painel ao vivo a amostra mais recente SEMPRE vale a pena buscar de novo.
+  const live = useDql<Telemetry>({ query: QUERY, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled, staleTime: 0 });
+  const liveOtel = useDql<Telemetry>({ query: QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:bounds.from, defaultTimeframeEnd:bounds.to }, { enabled: liveEnabled, staleTime: 0 });
+  const liveLaps = useDql<Telemetry>({ query: QUERY_LAPS, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled, staleTime: 0 });
+  const liveLapsOtel = useDql<Telemetry>({ query: QUERY_LAPS_OTEL, maxResultRecords:5000, maxResultBytes:5000000, defaultTimeframeStart:lapBounds.from, defaultTimeframeEnd:lapBounds.to }, { enabled: periodEnabled, staleTime: 0 });
 
   // Volta escolhida para reproduzir. A janela sai do próprio registro: fecha em
   // `timestamp`, dura `last_lap_s`.
@@ -264,7 +279,9 @@ export const Dashboard = () => {
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
   // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
   // de uma. Voltas sem empresa preenchida não entram no pódio.
-  const empresas = useMemo(() => companyPodium(ranking, 3), [ranking]);
+  // Por ora, pilotos em vez de empresas — pedido explícito, mantém a mesma
+  // lógica (primeira ocorrência de cada um no ranking já ordenado por tempo).
+  const pilotosPodio = useMemo(() => driverPodium(ranking, 3), [ranking]);
   // Dynatrace Intelligence: três observações calculadas do que já está
   // carregado (telemetria do período + voltas concluídas), sem consulta nova
   // ao Grail nem IA externa.
@@ -368,8 +385,10 @@ export const Dashboard = () => {
     <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{subtitulo}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(focus?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(focus?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={focus?.gear === -1 ? 'R' : focus?.gear === 0 ? 'N' : number(focus?.gear)}/><Stat label="Frenagem" value={number(focus?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(focus?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(focus?.lap_time_s)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(focus?.pos_x,1)} <span> / </span> Y {number(focus?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(focus?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span><strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong></div></section>
   </div>;
 
-  const podioEmpresas = <><div className="section-title"><Heading level={2}>Disputa entre empresas</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
-    <section className="podium" aria-label="Ranking de empresas">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{empresas[i]?.company_name ?? 'Aguardando empresa'}</strong><p>{empresas[i] ? empresas[i].driver_name : 'Sem volta concluída associada'}</p></div><b>{lapTime(empresas[i]?.last_lap_s)}</b></div>)}</section></>;
+  // Por ora, pódio de pilotos em vez de empresas (pedido explícito) - mesma
+  // estrutura visual, só troca a fonte do ranking.
+  const podioEmpresas = <><div className="section-title"><Heading level={2}>Disputa entre pilotos</Heading><span className="muted">Classificação pela melhor volta registrada</span></div>
+    <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].company_name ?? pilotosPodio[i].car_name ?? 'Empresa não informada') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
     <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
@@ -533,7 +552,11 @@ export const Dashboard = () => {
       <Flex alignItems="center" gap={8}>
         {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></>
           : mode === 'replay' ? <>{replayLap && <span className="muted">{lapLoading ? 'Carregando a volta…' : `${number(lapSamples.length)} amostras · 1×`}</span>}<Button variant="emphasized" disabled={!lapSamples.length} onClick={() => { if (cursor >= lapSamples.length) setCursor(0); setPlaying(!playing); }}>{playing ? 'Pausar' : cursor && cursor < lapSamples.length ? 'Continuar' : 'Reproduzir de novo'}</Button><Button disabled={!replayLap} onClick={() => {setReplayLap(null);setCursor(0);setPlaying(false);}}>Limpar pista</Button></>
-          : <Button onClick={() => { if (timeframe.to === 'now()') refresh(); else { void live.refetch(); void liveOtel.refetch(); void liveLaps.refetch(); void liveLapsOtel.refetch(); } }} loading={liveLoading || liveLapsLoading}>Atualizar</Button>}
+          // forceRefetch, não refetch: o botão existe para o operador pedir
+          // dado novo NA HORA - refetch() respeita o staleTime e podia não
+          // fazer nada se a última busca fosse recente, dando a impressão de
+          // "cliquei e não mudou nada".
+          : <Button onClick={() => { refresh(); void live.forceRefetch(); void liveOtel.forceRefetch(); void liveLaps.forceRefetch(); void liveLapsOtel.forceRefetch(); }} loading={liveLoading || liveLapsLoading}>Atualizar</Button>}
       </Flex>
     </section>
     <Tabs selectedIndex={abaAtual} onChange={i => changeMode(abas[i].id)}>
