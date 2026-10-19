@@ -23,6 +23,17 @@ test('curb and crash frames never become the reported g-force', () => {
   assert.equal(parseEvents([{...sample,acceleration_g:105.8}])[0].acceleration_g,null);
   assert.equal(parseEvents([{...sample,acceleration_g:3.23}])[0].acceleration_g,3.23);
 });
+// O AMS2 manda pos_x=0,pos_y=0 antes do carro ter posição real (carregando,
+// nos boxes) - Interlagos nunca passa perto da origem do mundo, então esse
+// par exato vira "sem posição", igual a não ter mandado nada.
+test('the (0,0) placeholder position before the car spawns is treated as no position', () => {
+  assert.equal(parseEvents([{...sample,pos_x:0,pos_y:0}])[0].pos_x,null);
+  assert.equal(parseEvents([{...sample,pos_x:0,pos_y:0}])[0].pos_y,null);
+});
+test('a real sample on an axis still counts, only the exact (0,0) pair is dropped', () => {
+  assert.equal(parseEvents([{...sample,pos_x:0,pos_y:42}])[0].pos_y,42);
+  assert.equal(parseEvents([{...sample,pos_x:-12,pos_y:0}])[0].pos_x,-12);
+});
 // O nome do piloto e o carro chegam em pacotes UDP próprios, ~27s depois do
 // primeiro quadro. Enquanto não chegam, os dois campos vêm nulos.
 test('samples from before the name and car arrive belong to the same driver', () => {

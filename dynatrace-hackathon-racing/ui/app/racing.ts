@@ -46,10 +46,17 @@ export function parseEvents(input: unknown): Telemetry[] {
     const str = (key: string) => typeof r[key] === 'string' ? r[key] : null;
     const speed = () => { const v = r.speed_kmh; return finite(v) && v >= 0 && v <= MAX_SPEED_KMH ? v : null; };
     const gforce = () => { const v = r.acceleration_g; return finite(v) && v >= 0 && v <= MAX_G ? v : null; };
+    // O AMS2 manda pos_x=0,pos_y=0 antes do carro ter uma posição real na pista
+    // (carregando, ainda nos boxes) — o nó do traçado mais perto da origem do
+    // mundo fica a 115 unidades dali, então esse par exato nunca é um ponto
+    // real de Interlagos. Sem este corte a bolinha do carro (e o mapa de
+    // calor) desenhavam esse placeholder como se fosse telemetria de verdade.
+    const posX = num('pos_x'), posY = num('pos_y');
+    const semPosicaoReal = posX === 0 && posY === 0;
     return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), company_name:str('company_name'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
-      pos_x:num('pos_x'), pos_y:num('pos_y'), lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
+      pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
   });
 }
