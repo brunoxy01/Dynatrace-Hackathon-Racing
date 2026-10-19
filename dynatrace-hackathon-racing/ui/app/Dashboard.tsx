@@ -26,17 +26,17 @@ const CORES_PODIO = ['#d4af37', '#9aa5b1', '#cd7f32'];
 function Capacete({posicao}: {posicao: number}) {
   const cor = CORES_PODIO[posicao - 1];
   if (!cor) return null;
-  // Perfil lateral (de lado), olhando para a direita: calota arredondada,
-  // entrada de ar no topo, friso diagonal, viseira grande com o pino do
-  // visor e uma faixa de corrida embaixo — mesma composição de um capacete
-  // de corrida visto de lado.
-  return <svg className="capacete-brilho" viewBox="0 0 100 80" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
-    <path d="M14 40C14 19 32 7 54 7c20 0 36 10 40 26 2 6-2 11-8 12-3 9-11 16-21 16H45C23 61 14 55 14 40z" fill={cor}/>
-    <path d="M23 24c6-6 18-7 23-2-7 4-15 7-22 9-2-2-3-5-1-7z" fill="#20262e" opacity=".6"/>
-    <path d="M30 35 83 19l3 7-50 17z" fill="#20262e" opacity=".6"/>
-    <path d="M34 43 88 30c2 6-1 12-6 16L49 58c-10 1-16-6-15-15z" fill="#20262e" opacity=".6"/>
-    <circle cx="51" cy="47" r="3.6" fill={cor}/>
-    <path d="M40 58l44-15c-2 4-5 7-9 9L50 61c-4 1-8 0-10-3z" fill="#20262e" opacity=".35"/>
+  // Carrinho esportivo de lado (pedido explícito, em vez do capacete):
+  // carroceria com cabine, aerofólio traseiro à esquerda, nariz à direita,
+  // janela recortada e duas rodas com miolo na cor do pódio.
+  return <svg className="capacete-brilho" viewBox="0 0 120 56" style={{'--capacete-cor': cor} as React.CSSProperties} role="img" aria-label={['Ouro','Prata','Bronze'][posicao-1]}>
+    <path d="M4 15 2 2c0-1 1-2 2-1l16 11v10H6c-1 0-2-1-2-2z" fill={cor}/>
+    <path d="M6 38c-3-1-5-4-4-8s4-6 9-6h9c2-9 13-15 26-15h24c9 0 16 5 19 12h17c6 0 10 5 10 11v3c0 2-2 4-4 4h-15a10 10 0 0 1-20 0H46a10 10 0 0 1-20 0H11c-2 0-4-1-5-1z" fill={cor}/>
+    <path d="M34 16c7-2 15-2 22-1l4 10H30z" fill="#20262e" opacity=".55"/>
+    <circle cx="36" cy="38" r="10" fill="#20262e"/>
+    <circle cx="36" cy="38" r="3.6" fill={cor}/>
+    <circle cx="86" cy="38" r="10" fill="#20262e"/>
+    <circle cx="86" cy="38" r="3.6" fill={cor}/>
   </svg>;
 }
 function Posicao({posicao}: {posicao: number}) {
