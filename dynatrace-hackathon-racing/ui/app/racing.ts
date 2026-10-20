@@ -286,6 +286,22 @@ export function advancePlayback(clock: number, oldest: number, newest: number, s
   return Math.min(newest, clock + step);
 }
 
+// Posição do carro no instante `at`, interpolada entre as duas amostras em volta
+// dele. O relógio do mapa anda a cada 50 ms, mas o rig manda 10 amostras/s: sem
+// interpolar, a bolinha ficava parada 100 ms e saltava para a amostra seguinte.
+// Buraco maior que 1 s (box, pausa, teleporte de reinício) não é interpolado,
+// para o carro não deslizar por fora da pista.
+export function positionAt(trail: Telemetry[], at: number): {x: number; y: number} {
+  const atual = sampleAt(trail, at);
+  const i = trail.indexOf(atual), proxima = trail[i + 1];
+  const t0 = Date.parse(atual.timestamp);
+  if (!proxima || at <= t0) return {x: atual.pos_x!, y: atual.pos_y!};
+  const t1 = Date.parse(proxima.timestamp);
+  if (t1 - t0 > 1000 || t1 <= t0) return {x: atual.pos_x!, y: atual.pos_y!};
+  const f = Math.min(1, (at - t0) / (t1 - t0));
+  return {x: atual.pos_x! + (proxima.pos_x! - atual.pos_x!) * f, y: atual.pos_y! + (proxima.pos_y! - atual.pos_y!) * f};
+}
+
 // Última amostra da trilha até o instante `at`. Busca binária porque isto roda
 // a cada quadro da animação, sobre trilhas de até 10.000 pontos.
 export function sampleAt(trail: Telemetry[], at: number): Telemetry {

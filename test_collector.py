@@ -175,7 +175,7 @@ class FilaTests(unittest.TestCase):
         def criar_envio():
             def envia(lote):
                 liberar.wait()
-                recebidos.append(lote[0])
+                recebidos.extend(lote)
             return envia
 
         fila = EnvioEmSegundoPlano(criar_envio, "teste", limite=2)
@@ -187,6 +187,25 @@ class FilaTests(unittest.TestCase):
         fila.drenar(2)
         self.assertEqual([0, 2, 3], recebidos)
         self.assertEqual(1, fila.descartados)
+
+    def test_backlog_goes_out_in_one_post_and_in_order(self):
+        liberar = threading.Event()
+        envios = []
+
+        def criar_envio():
+            def envia(amostras):
+                liberar.wait()
+                envios.append(list(amostras))
+            return envia
+
+        fila = EnvioEmSegundoPlano(criar_envio, "teste")
+        fila.enfileirar([0, 1])       # a thread pega este e fica presa no POST
+        time.sleep(0.1)
+        for lote in ([2, 3], [4, 5], [6]):
+            fila.enfileirar(lote)     # acumulam enquanto o POST demora
+        liberar.set()
+        fila.drenar(2)
+        self.assertEqual([[0, 1], [2, 3, 4, 5, 6]], envios)
 
 
 if __name__ == "__main__":

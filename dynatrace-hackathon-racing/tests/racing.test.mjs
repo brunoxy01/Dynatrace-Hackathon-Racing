@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -631,4 +631,14 @@ test('without positions the replay falls back to the game clock cut', () => {
   const amostras = voltaSintetica(range(0, 50), i => i < 10 ? null : +((i - 10) * 0.1).toFixed(1)).map(e => ({...e, pos_x:null, pos_y:null}));
   assert.deepEqual(lineCrossings(amostras, INTERLAGOS), []);
   assert.equal(trimToLineToLine(amostras, 4, INTERLAGOS)[0].lap_time_s, 0);
+});
+
+test('live marker glides between 10 Hz samples instead of jumping', () => {
+  const t0 = Date.UTC(2026, 9, 20);
+  const trilha = [0, 100, 200, 1500].map((ms, i) => ({...sample, pos_x:i * 10, pos_y:0, timestamp:new Date(t0 + ms).toISOString()}));
+  assert.deepEqual(positionAt(trilha, t0 + 50), {x:5, y:0});
+  assert.deepEqual(positionAt(trilha, t0 + 100), {x:10, y:0});
+  // Buraco de 1,3 s: não interpola, o carro fica na última posição conhecida.
+  assert.deepEqual(positionAt(trilha, t0 + 800), {x:20, y:0});
+  assert.deepEqual(positionAt(trilha, t0 + 9000), {x:30, y:0});
 });

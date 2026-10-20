@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
-import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, driverKey } from './racing';
+import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, positionAt, advancePlayback, PLAYBACK_TRAIL_MS, driverKey } from './racing';
 
 // Fixed world-to-map transform shared by the reference and live samples.
 const project = (x: number, y: number) => ({x: 54 + (y + 486) * .53, y: 40 + (x + 480) * .53});
@@ -61,7 +61,8 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
   if (!paths.length) return null;
   return <>{paths.map(trail => {
     const car = sampleAt(trail, at);
-    const point = project(car.pos_x!, car.pos_y!);
+    const posicao = positionAt(trail, at);
+    const point = project(posicao.x, posicao.y);
     // Mesma convenção do avatar do piloto em destaque: duas primeiras letras
     // do nome, maiúsculas (Plínio -> PL, Bruno -> BR). Sem nome ainda (os
     // primeiros ~27s da sessão, antes do pacote de identidade chegar), o
@@ -149,10 +150,19 @@ export function InsightsMap({events, markers}: {events: Telemetry[]; markers: In
 
 export function TrackMap({events, carName, animate = false}: {events: Telemetry[]; carName?: string | null; animate?: boolean}) {
   const id = useId().replace(/:/g,'');
+  // No Ao vivo a bolinha anda PLAYBACK_TRAIL_MS atrás da amostra mais nova. Se o
+  // calor usasse tudo, a pista aparecia pintada à frente do carro, como se ele
+  // já tivesse passado ali. O calor vai até o ponto onde o relógio começa a cada
+  // recarga; entre recargas o carro anda à frente da tinta, nunca atrás.
+  const heatEvents = useMemo(() => {
+    if (!animate || !events.length) return events;
+    const corte = Math.max(...events.map(e => Date.parse(e.timestamp))) - PLAYBACK_TRAIL_MS;
+    return events.filter(e => Date.parse(e.timestamp) <= corte);
+  }, [events, animate]);
   const colors = useMemo(() => {
-    const speed = trackHeat(events, 'speed_kmh', nodes), brake = trackHeat(events, 'brake_pct', nodes), acceleration = trackHeat(events, 'acceleration_g', nodes);
+    const speed = trackHeat(heatEvents, 'speed_kmh', nodes), brake = trackHeat(heatEvents, 'brake_pct', nodes), acceleration = trackHeat(heatEvents, 'acceleration_g', nodes);
     return speed.map((v,i) => mixedHeatColor(v,brake[i],acceleration[i]));
-  }, [events]);
+  }, [heatEvents]);
   // The viewBox is extended to the left (and anchored with xMin) to open room for the car
   // outside the track outline; the outline itself keeps its original place and scale.
   return <svg className="track-map" viewBox="-180 0 860 450" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Mapa de Interlagos com velocidade em azul, frenagem em vermelho e aceleração em verde">

@@ -322,9 +322,11 @@ class EnvioEmSegundoPlano:
     comecava no meio. Por isso o padrao e' 1 thread; com keep-alive ela da' conta.
     """
 
-    def __init__(self, criar_envio, nome: str, limite: int = 300, trabalhadores: int = 1):
+    def __init__(self, criar_envio, nome: str, limite: int = 300, trabalhadores: int = 1,
+                 max_por_envio: int = 500):
         self.fila: "queue.Queue[list]" = queue.Queue(maxsize=limite)
         self.nome = nome
+        self.max_por_envio = max_por_envio
         self.descartados = 0
         self.threads = [
             threading.Thread(target=self._laco, args=(criar_envio,), name=f"envio-{nome}-{i}", daemon=True)
@@ -336,14 +338,26 @@ class EnvioEmSegundoPlano:
     def _laco(self, criar_envio) -> None:
         envia = criar_envio()
         while True:
-            lote = self.fila.get()
+            lotes = [self.fila.get()]
+            # Junta no mesmo POST o que se acumulou enquanto o anterior viajava.
+            # Com uma thread so' (para manter a ordem), um POST mais lento que o
+            # intervalo de envio fazia a fila crescer e os dados chegarem em
+            # rajadas - no Ao vivo a bolinha parava e depois corria. Assim o
+            # POST cresce quando a rede piora, e a fila nao.
+            while sum(len(l) for l in lotes) < self.max_por_envio:
+                try:
+                    lotes.append(self.fila.get_nowait())
+                except queue.Empty:
+                    break
             try:
-                if lote:
-                    envia(lote)
+                juntos = [amostra for lote in lotes for amostra in lote]
+                if juntos:
+                    envia(juntos)
             except Exception as erro:  # nunca deixar a thread de envio morrer
                 print(f"[erro] {self.nome}: {erro}", file=sys.stderr)
             finally:
-                self.fila.task_done()
+                for _ in lotes:
+                    self.fila.task_done()
 
     def enfileirar(self, lote: list) -> None:
         while True:
