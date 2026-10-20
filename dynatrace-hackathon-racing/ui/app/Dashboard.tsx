@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -165,6 +165,11 @@ const LAPS_REFRESH_MS = 15000;
 // Por piloto, o período inteiro virava uma linha por pessoa — com um piloto só
 // na pista, uma linha no total.
 type Ranked = Telemetry & {position: number};
+// Classificação: a primeira página é o "top 20"; com mais voltas no período, a
+// tabela pagina. autoResetPageIndex desligado porque no Ao vivo as voltas
+// recarregam a cada 15s e a tabela voltava para a página 1 no meio da leitura;
+// a tabela ganha `key` com o período para recomeçar do topo quando ele muda.
+const RANKING_PAGE_SIZE = 20;
 // Sem máxima (volta que começou antes do período, ou amostras já fora da
 // retenção) a célula mostra "—" e a linha vai para o fim ao ordenar.
 // S1, S2 e S3 logo depois do tempo da volta, nas duas tabelas de voltas.
@@ -266,11 +271,11 @@ export const Dashboard = () => {
   // volta, da largada à largada, para a reprodução não começar com o carro já
   // andando e o cronômetro da telemetria sair do zero.
   const lapSamples = useMemo(() => replayEnabled && replayLap
-    ? trimToLap(inSampleOrder(backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))), replayLap.last_lap_s ?? 0)
+    ? trimToLineToLine(inSampleOrder(backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))), replayLap.last_lap_s ?? 0, TRACK)
     : [], [replayEnabled, replayLap, lapBiz.data, lapOtel.data]);
   // Passo tirado das próprias amostras: reproduz em 1× tanto num rig a 20 Hz
   // quanto a 60 Hz, sem depender da frequência configurada no jogo.
-  const replayFromLine = startsAtLine(lapSamples);
+  const replayFromLine = startsAtTrackLine(lapSamples, TRACK) || startsAtLine(lapSamples);
   const replayStep = lapSamples.length > 1
     ? Math.max(20, (Date.parse(lapSamples[lapSamples.length-1].timestamp) - Date.parse(lapSamples[0].timestamp)) / lapSamples.length)
     : 50;
@@ -377,7 +382,7 @@ export const Dashboard = () => {
   const refOtel = useDql<Telemetry>({ query: reference?.otel ?? QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:reference?.from, defaultTimeframeEnd:reference?.to }, { enabled: referenceEnabled });
   const referenceProfile = useMemo(() => {
     if (!referenceEnabled || !reference) return null;
-    const amostras = trimToLap(inSampleOrder(mergeTelemetry(parseEvents(refBiz.data?.records), parseEvents(refOtel.data?.records))), reference.seconds);
+    const amostras = trimToLineToLine(inSampleOrder(mergeTelemetry(parseEvents(refBiz.data?.records), parseEvents(refOtel.data?.records))), reference.seconds, TRACK);
     return amostras.length ? lapProfile(amostras, TRACK) : null;
   }, [referenceEnabled, reference, refBiz.data, refOtel.data]);
   // Delta do carro em foco contra o líder, no ponto em que ele está agora.
@@ -467,14 +472,14 @@ export const Dashboard = () => {
     </div>
     {indicadores}
     {podioEmpresas}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período escolhido no seletor acima, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição. O mapa e a telemetria ao lado mostram sempre os {LIVE_WINDOW_LABEL}.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Classificação das voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">Todas as voltas do período escolhido no seletor acima, da mais rápida para a mais lenta, {RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. O mapa e a telemetria ao lado mostram sempre os {LIVE_WINDOW_LABEL}.</p><DataTable key={janela} data={ranking} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.Pagination defaultPageSize={RANKING_PAGE_SIZE} autoResetPageIndex={false}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
   </>;
 
   // ---------- Tela 2: histórico ----------
   const telaHistorico = <>
     {liveLaps.error && <div className="notice error" role="alert">Não foi possível consultar as voltas concluídas: {liveLaps.error.message}</div>}
     {podioEmpresas}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Classificação das voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">Todas as voltas do período, da mais rápida para a mais lenta, {RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.</p><DataTable key={janela} data={ranking} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.Pagination defaultPageSize={RANKING_PAGE_SIZE} autoResetPageIndex={false}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
   </>;
 
   // ---------- Tela 3: replay ----------

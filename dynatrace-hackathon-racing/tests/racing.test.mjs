@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { readFileSync } from 'node:fs';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -590,4 +591,44 @@ test('sector times read as seconds below a minute and m:ss above', () => {
   assert.equal(sectorTime(62.345), '1:02.345');
   assert.equal(sectorTime(null), '—');
   assert.equal(parseEvents([{...sample, last_lap_s1:24.653, last_lap_s2:57.54, last_lap_s3:21.822}])[0].last_lap_s3, 21.822);
+});
+
+// Traçado real de Interlagos: o ponto 0 é a linha de largada/chegada.
+const INTERLAGOS = JSON.parse(readFileSync(new URL('../ui/app/data/interlagos.json', import.meta.url), 'utf8'));
+// Quadros andando pelos pontos do traçado, um a cada 100 ms. `cronometro(i)`
+// devolve o lap_time_s do quadro i (ou null).
+function voltaSintetica(nos, cronometro) {
+  return nos.map((no, i) => ({...sample, pos_x:INTERLAGOS[no][0], pos_y:INTERLAGOS[no][1], lap_time_s:cronometro(i),
+    timestamp:new Date(Date.UTC(2026, 9, 20, 0, 0, 0) + i * 100).toISOString()}));
+}
+const range = (a, b) => Array.from({length: b - a + 1}, (_, i) => a + i);
+const N = INTERLAGOS.length;
+test('replay starts at the start line even when the game clock already runs before it', () => {
+  // O AMS2 entrega o carro 27 pontos antes da linha com o cronômetro já
+  // correndo; ele só zera na linha de CHEGADA, ao fim da volta seguinte.
+  const nos = [...range(N - 27, N - 1), ...range(0, N - 1), ...range(0, 20)];
+  const fimDaVolta = 27 + N - 1;
+  const amostras = voltaSintetica(nos, i => i <= fimDaVolta ? +(i * 0.1).toFixed(1) : +((i - fimDaVolta - 1) * 0.1).toFixed(1));
+  assert.equal(trimToLap(amostras, fimDaVolta * 0.1)[0].pos_x, INTERLAGOS[N - 27][0], 'pelo cronômetro, começava antes da linha');
+  const volta = trimToLineToLine(amostras, fimDaVolta * 0.1, INTERLAGOS);
+  assert.equal(volta.length, N);
+  assert.deepEqual([volta[0].pos_x, volta[0].pos_y], INTERLAGOS[0]);
+  assert.deepEqual([volta.at(-1).pos_x, volta.at(-1).pos_y], INTERLAGOS[N - 1]);
+  assert.ok(startsAtTrackLine(volta, INTERLAGOS));
+  assert.ok(!startsAtTrackLine(amostras, INTERLAGOS));
+});
+test('replay starts at the line when the clock only starts a few frames after it', () => {
+  // Como na captura real: sem cronômetro antes da linha, e ele só aparece
+  // alguns quadros depois de cruzá-la.
+  const nos = [...range(N - 27, N - 1), ...range(0, N - 1), ...range(0, 20)];
+  const fimDaVolta = 27 + N - 1;
+  const amostras = voltaSintetica(nos, i => i < 30 ? null : i <= fimDaVolta ? +((i - 30) * 0.1).toFixed(1) : +((i - fimDaVolta - 1) * 0.1).toFixed(1));
+  const volta = trimToLineToLine(amostras, (fimDaVolta - 30) * 0.1, INTERLAGOS);
+  assert.deepEqual([volta[0].pos_x, volta[0].pos_y], INTERLAGOS[0]);
+  assert.deepEqual([volta.at(-1).pos_x, volta.at(-1).pos_y], INTERLAGOS[N - 1]);
+});
+test('without positions the replay falls back to the game clock cut', () => {
+  const amostras = voltaSintetica(range(0, 50), i => i < 10 ? null : +((i - 10) * 0.1).toFixed(1)).map(e => ({...e, pos_x:null, pos_y:null}));
+  assert.deepEqual(lineCrossings(amostras, INTERLAGOS), []);
+  assert.equal(trimToLineToLine(amostras, 4, INTERLAGOS)[0].lap_time_s, 0);
 });

@@ -337,7 +337,7 @@ export function inSampleOrder(samples: Telemetry[]): Telemetry[] {
   return [...samples].sort((a, b) => sampleSeq(a)! - sampleSeq(b)! || porTempo(a, b));
 }
 
-export function trimToLap(samples: Telemetry[], lapSeconds: number): Telemetry[] {
+function lapBounds(samples: Telemetry[], lapSeconds: number): [number, number] | null {
   // O fim da volta é o quadro de MAIOR cronômetro dentro da duração oficial —
   // não o último da janela, que já pertence à volta seguinte (cronômetro zerado).
   let end = -1, maior = -Infinity;
@@ -345,14 +345,67 @@ export function trimToLap(samples: Telemetry[], lapSeconds: number): Telemetry[]
     const t = samples[i].lap_time_s;
     if (finite(t) && t <= lapSeconds + 0.5 && t > maior) { maior = t; end = i; }
   }
-  if (end < 0) return samples;
+  if (end < 0) return null;
   let start = end;
   while (start > 0) {
     const anterior = samples[start - 1].lap_time_s, atual = samples[start].lap_time_s;
     if (!finite(anterior) || !finite(atual) || anterior > atual) break;
     start--;
   }
-  return samples.slice(start, end + 1);
+  return [start, end];
+}
+
+export function trimToLap(samples: Telemetry[], lapSeconds: number): Telemetry[] {
+  const limites = lapBounds(samples, lapSeconds);
+  return limites ? samples.slice(limites[0], limites[1] + 1) : samples;
+}
+
+// Passagens pela linha de largada/chegada: a linha é o ponto 0 do traçado e o
+// carro anda no sentido crescente, então cruzá-la é pular do fim do traçado para
+// o começo (conferido na captura: 466 → 0, no mesmo quadro em que o cronômetro
+// zera). Devolve o índice do primeiro quadro DEPOIS da linha. Quadros sem
+// posição, ou longe da pista, são pulados sem quebrar a detecção.
+export function lineCrossings(samples: Telemetry[], track: number[][]): number[] {
+  const cruzamentos: number[] = [];
+  let anterior = -1;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    const no = finite(s.pos_x) && finite(s.pos_y) ? nearestNode(s.pos_x, s.pos_y, track) : -1;
+    if (no < 0) continue;
+    if (anterior >= 0 && anterior - no > track.length / 2) cruzamentos.push(i);
+    anterior = no;
+  }
+  return cruzamentos;
+}
+
+// A volta da linha de largada até a linha de chegada. O cronômetro do jogo acha
+// QUAL volta é (trimToLap), mas não serve para cortar a largada: o AMS2 entrega
+// o carro um pouco antes da linha, e nesse trecho o cronômetro pode já estar
+// correndo — o replay começava ali, antes da linha. Quem decide o primeiro e o
+// último quadro é a passagem pela linha mais próxima de cada ponta. Sem
+// passagem por perto (posição ausente), fica o recorte do cronômetro.
+export function trimToLineToLine(samples: Telemetry[], lapSeconds: number, track: number[][]): Telemetry[] {
+  const limites = lapBounds(samples, lapSeconds);
+  if (!limites) return samples;
+  let [start, end] = limites;
+  const meio = (start + end) / 2;
+  const cruzamentos = lineCrossings(samples, track);
+  const maisPerto = (alvo: number, candidatos: number[]) => candidatos.reduce<number | null>(
+    (melhor, c) => melhor === null || Math.abs(c - alvo) < Math.abs(melhor - alvo) ? c : melhor, null);
+  const largada = maisPerto(start, cruzamentos.filter(c => c < meio));
+  const chegada = maisPerto(end + 1, cruzamentos.filter(c => c > meio));
+  if (largada !== null) start = largada;
+  if (chegada !== null) end = chegada - 1;
+  return end > start ? samples.slice(start, end + 1) : samples.slice(limites[0], limites[1] + 1);
+}
+
+// O primeiro quadro está na linha de largada? Ponto 0 do traçado ou até ~90 m
+// depois dele (10 pontos), o que cobre o espaçamento entre amostras a 10 Hz.
+export function startsAtTrackLine(samples: Telemetry[], track: number[][]): boolean {
+  const s = samples[0];
+  if (!s || !finite(s.pos_x) || !finite(s.pos_y)) return false;
+  const no = nearestNode(s.pos_x, s.pos_y, track);
+  return no >= 0 && no <= 10;
 }
 
 // Perfil da volta de referência: em cada ponto do traçado, o menor tempo de
