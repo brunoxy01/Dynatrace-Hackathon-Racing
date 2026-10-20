@@ -19,6 +19,11 @@ test('teleport and crash frames never become the peak speed', () => {
   assert.equal(parseEvents([{...sample,speed_kmh:300.6}])[0].speed_kmh,300.6);
   assert.equal(summarize(parseEvents([{...sample,speed_kmh:300.6},{...sample,timestamp:'2026-09-19T00:00:01Z',speed_kmh:579.4}]))[0].peak,300.6);
 });
+test('lap top speed is parsed with the same teleport cut as live speed', () => {
+  assert.equal(parseEvents([{...sample,top_speed_kmh:297.2}])[0].top_speed_kmh,297.2);
+  assert.equal(parseEvents([{...sample,top_speed_kmh:579.4}])[0].top_speed_kmh,null);
+  assert.equal(parseEvents([sample])[0].top_speed_kmh,null);
+});
 test('curb and crash frames never become the reported g-force', () => {
   assert.equal(parseEvents([{...sample,acceleration_g:105.8}])[0].acceleration_g,null);
   assert.equal(parseEvents([{...sample,acceleration_g:3.23}])[0].acceleration_g,3.23);

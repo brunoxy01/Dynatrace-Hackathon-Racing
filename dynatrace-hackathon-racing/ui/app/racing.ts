@@ -18,6 +18,9 @@ export interface Telemetry {
   lap_invalidated?: boolean | null;
   lap_number: number | null;
   lap_race_position: number | null;
+  // Só nas linhas de volta concluída (consulta LAPS): velocidade máxima DENTRO
+  // da volta, calculada no Grail.
+  top_speed_kmh?: number | null;
 }
 
 export type Metric = 'speed_kmh' | 'brake_pct' | 'acceleration_g';
@@ -43,7 +46,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     if (typeof r.timestamp !== 'string' || !Number.isFinite(Date.parse(r.timestamp))) return [];
     const num = (key: string) => finite(r[key]) ? r[key] : null;
     const str = (key: string) => typeof r[key] === 'string' ? r[key] : null;
-    const speed = () => { const v = r.speed_kmh; return finite(v) && v >= 0 && v <= MAX_SPEED_KMH ? v : null; };
+    const speed = (key = 'speed_kmh') => { const v = r[key]; return finite(v) && v >= 0 && v <= MAX_SPEED_KMH ? v : null; };
     const gforce = () => { const v = r.acceleration_g; return finite(v) && v >= 0 && v <= MAX_G ? v : null; };
     // O AMS2 manda pos_x=0,pos_y=0 antes do carro ter uma posição real na pista
     // (carregando, ainda nos boxes) — o nó do traçado mais perto da origem do
@@ -56,7 +59,7 @@ export function parseEvents(input: unknown): Telemetry[] {
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
-      lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position')}];
+      lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position'), top_speed_kmh:speed('top_speed_kmh')}];
   });
 }
 // A mesma amostra pode chegar ao Grail por dois caminhos: bizevents (API direta)

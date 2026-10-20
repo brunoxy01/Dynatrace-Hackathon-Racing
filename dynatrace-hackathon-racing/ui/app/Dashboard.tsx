@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -80,6 +80,11 @@ const QUERY = `fetch bizevents
 // lap_number NÃO entra na chave: o simulador repete o mesmo `last_lap_s`
 // enquanto não fecha uma volta nova, então agrupar por ele criava uma linha
 // para cada volta em que o carro passou carregando o mesmo tempo.
+// Velocidade máxima da volta: os quadros que anunciam `last_lap_s` já são da
+// volta SEGUINTE (na captura, a volta 2 carrega o tempo da volta 1), então o
+// max() dentro deste summarize daria a máxima da volta errada. A volta
+// concluída é `lap_number - 1`; o lookup traz a máxima dela, com o mesmo corte
+// de quadros de teleporte/batida do parseEvents.
 const LAPS = (fonte: string) => `fetch ${fonte}
 | filter event.type == "racing.telemetry"
 | filter isNotNull(last_lap_s) and last_lap_s > 0
@@ -91,6 +96,16 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     driver_name = takeAny(driver_name),
     car_name = takeAny(car_name)
   }, by: {\`rig.id\`, \`session.id\`, last_lap_s}
+| fieldsAdd lap_key = concat(\`rig.id\`, "|", \`session.id\`, "|", toString(toLong(lap_number) - 1))
+| lookup [
+    fetch ${fonte}
+    | filter event.type == "racing.telemetry"
+    | filter isNull(track_name) or track_name == "Interlagos"
+    | filter isNotNull(lap_number) and speed_kmh >= 0 and speed_kmh <= ${MAX_SPEED_KMH}
+    | summarize top_speed_kmh = max(speed_kmh), by: {\`rig.id\`, \`session.id\`, lap_number}
+    | fieldsAdd lap_key = concat(\`rig.id\`, "|", \`session.id\`, "|", toString(toLong(lap_number)))
+  ], sourceField: lap_key, lookupField: lap_key, fields: {top_speed_kmh}
+| fieldsRemove lap_key
 | sort timestamp desc
 | limit 5000`;
 const QUERY_LAPS = LAPS('bizevents');
@@ -144,10 +159,15 @@ const LAPS_REFRESH_MS = 15000;
 // Por piloto, o período inteiro virava uma linha por pessoa — com um piloto só
 // na pista, uma linha no total.
 type Ranked = Telemetry & {position: number};
+// Sem máxima (volta que começou antes do período, ou amostras já fora da
+// retenção) a célula mostra "—" e a linha vai para o fim ao ordenar.
+const TOP_SPEED_COLUMN: DataTableColumnDef<Telemetry> = { id: 'top_speed', header: 'Vel. máxima', accessor: 'top_speed_kmh', minWidth: 120, sortType: 'number', sortAccessor: row => row.top_speed_kmh ?? -1,
+  cell: ({rowData}) => <>{finite(rowData.top_speed_kmh) ? `${number(rowData.top_speed_kmh, 1)} km/h` : '—'}</> };
 const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  TOP_SPEED_COLUMN,
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
@@ -387,6 +407,7 @@ export const Dashboard = () => {
     { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
     { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
       cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
+    TOP_SPEED_COLUMN,
     { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
     { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   ], []);
