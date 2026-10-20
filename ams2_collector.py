@@ -312,8 +312,9 @@ class EnvioEmSegundoPlano:
     descarta o lote MAIS ANTIGO: num painel ao vivo, o dado novo vale mais.
 
     Cada thread tem a sua conexao keep-alive (`criar_envio` e' chamado uma vez
-    por thread). Mais de uma thread deixa um POST lento nao segurar os demais;
-    a ordem de chegada nao importa, porque cada amostra leva o proprio timestamp.
+    por thread). Mais de uma thread embaralha a ORDEM DE CHEGADA dos lotes, e
+    o app ja' sofreu com isso: o replay recortava a volta pela ordem do Grail e
+    comecava no meio. Por isso o padrao e' 1 thread; com keep-alive ela da' conta.
     """
 
     def __init__(self, criar_envio, nome: str, limite: int = 300, trabalhadores: int = 1):
@@ -371,10 +372,11 @@ class Dispatcher:
         self.ingest_url = ingest_url
         self.to_bizevents = args.sink in ("bizevents", "both") and bool(ingest_url) and not args.dry_run
         self.to_otlp = args.sink in ("otlp", "both") and not args.dry_run
-        # Os dois destinos saem da thread do UDP. O bizevents cruza a internet e
-        # ganha 2 threads; o OTLP vai para o collector em 127.0.0.1, que responde
-        # na hora e ja' tem fila e reenvio proprios, entao 1 thread basta.
-        self._bizevents = EnvioEmSegundoPlano(self._envio_bizevents, "bizevents", trabalhadores=2) \
+        # Os dois destinos saem da thread do UDP, cada um com UMA thread: a ordem
+        # de chegada fica igual a' ordem do jogo. Com 2 threads no bizevents os
+        # lotes chegavam embaralhados ao Grail (v1.10.0/1.10.1). A conexao
+        # keep-alive e' o que faz uma thread so' acompanhar o rig.
+        self._bizevents = EnvioEmSegundoPlano(self._envio_bizevents, "bizevents") \
             if self.to_bizevents else None
         self._otlp = EnvioEmSegundoPlano(self._envio_otlp, "otlp") if self.to_otlp else None
 

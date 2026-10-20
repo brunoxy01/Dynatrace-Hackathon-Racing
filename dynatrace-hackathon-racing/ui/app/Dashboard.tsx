@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -252,8 +252,7 @@ export const Dashboard = () => {
   // volta, da largada à largada, para a reprodução não começar com o carro já
   // andando e o cronômetro da telemetria sair do zero.
   const lapSamples = useMemo(() => replayEnabled && replayLap
-    ? trimToLap(backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))
-        .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), replayLap.last_lap_s ?? 0)
+    ? trimToLap(inSampleOrder(backfillIdentity(mergeTelemetry(parseEvents(lapBiz.data?.records), parseEvents(lapOtel.data?.records)))), replayLap.last_lap_s ?? 0)
     : [], [replayEnabled, replayLap, lapBiz.data, lapOtel.data]);
   // Passo tirado das próprias amostras: reproduz em 1× tanto num rig a 20 Hz
   // quanto a 60 Hz, sem depender da frequência configurada no jogo.
@@ -364,8 +363,7 @@ export const Dashboard = () => {
   const refOtel = useDql<Telemetry>({ query: reference?.otel ?? QUERY_OTEL, maxResultRecords:10000, maxResultBytes:10000000, defaultTimeframeStart:reference?.from, defaultTimeframeEnd:reference?.to }, { enabled: referenceEnabled });
   const referenceProfile = useMemo(() => {
     if (!referenceEnabled || !reference) return null;
-    const amostras = trimToLap(mergeTelemetry(parseEvents(refBiz.data?.records), parseEvents(refOtel.data?.records))
-      .sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), reference.seconds);
+    const amostras = trimToLap(inSampleOrder(mergeTelemetry(parseEvents(refBiz.data?.records), parseEvents(refOtel.data?.records))), reference.seconds);
     return amostras.length ? lapProfile(amostras, TRACK) : null;
   }, [referenceEnabled, reference, refBiz.data, refOtel.data]);
   // Delta do carro em foco contra o líder, no ponto em que ele está agora.

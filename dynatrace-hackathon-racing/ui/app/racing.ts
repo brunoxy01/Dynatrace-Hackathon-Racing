@@ -308,6 +308,25 @@ export function nearestNode(x: number, y: number, nodes: number[][]): number {
 // até o tempo da volta. Andamos de trás para frente a partir do fechamento
 // enquanto o cronômetro decresce; ele para de decrescer — ou some, porque o
 // jogo não reportava tempo na volta anterior — exatamente na largada.
+// Número de sequência da amostra no rig: o fim de `sample.id` ("rig|sessão|seq").
+export function sampleSeq(e: Telemetry): number | null {
+  const seq = Number(e['sample.id']?.split('|').pop());
+  return Number.isInteger(seq) ? seq : null;
+}
+
+// Amostras de UMA sessão na ordem em que o rig as gerou. O timestamp do Grail
+// não basta: voltas gravadas com a v1.10.0/1.10.1 do coletor saíram por 2 threads
+// em paralelo e chegaram fora de ordem, e o timestamp passou a não acompanhar o
+// cronômetro do jogo. O trimToLap anda para trás enquanto o cronômetro decresce;
+// uma inversão no meio da volta o fazia parar ali, e o replay começava com mais
+// de um minuto rodado. A sequência vem do próprio rig e é sempre crescente numa
+// sessão. Sem sequência em alguma amostra (dado antigo), fica o timestamp.
+export function inSampleOrder(samples: Telemetry[]): Telemetry[] {
+  const porTempo = (a: Telemetry, b: Telemetry) => Date.parse(a.timestamp) - Date.parse(b.timestamp);
+  if (!samples.every(e => sampleSeq(e) !== null)) return [...samples].sort(porTempo);
+  return [...samples].sort((a, b) => sampleSeq(a)! - sampleSeq(b)! || porTempo(a, b));
+}
+
 export function trimToLap(samples: Telemetry[], lapSeconds: number): Telemetry[] {
   // O fim da volta é o quadro de MAIOR cronômetro dentro da duração oficial —
   // não o último da janela, que já pertence à volta seguinte (cronômetro zerado).

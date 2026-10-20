@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -564,4 +564,22 @@ test('lapConsistency ignores laps without a usable time or driver name', () => {
   assert.equal(resultado.length, 1);
   assert.equal(resultado[0].driverName, 'Piloto');
   assert.equal(resultado[0].laps, 2);
+});
+
+test('replay keeps the rig order when batches reached Grail out of order', () => {
+  // Volta de 10 quadros (cronômetro 0..9 s) cujo lote do meio chegou ANTES: os
+  // timestamps do Grail ficam fora da ordem do cronômetro.
+  const chegada = [0, 1, 2, 6, 7, 3, 4, 5, 8, 9];
+  const amostras = chegada.map((seq, i) => ({...sample, 'sample.id':`rig|s1|${seq + 100}`, lap_time_s:seq,
+    timestamp:new Date(Date.UTC(2026, 9, 20, 0, 0, i)).toISOString()}));
+  const porTempo = [...amostras].sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  assert.equal(trimToLap(porTempo, 9)[0].lap_time_s, 3, 'por timestamp o recorte parava no meio da volta');
+  const volta = trimToLap(inSampleOrder(amostras), 9);
+  assert.deepEqual(volta.map(e => e.lap_time_s), [0,1,2,3,4,5,6,7,8,9]);
+});
+test('samples without a sequence fall back to timestamp order', () => {
+  assert.equal(sampleSeq({...sample, 'sample.id':'rig|s1|42'}), 42);
+  assert.equal(sampleSeq(sample), null);
+  const a = {...sample, timestamp:'2026-09-19T00:00:02Z'}, b = {...sample, timestamp:'2026-09-19T00:00:01Z'};
+  assert.deepEqual(inSampleOrder([a, b]), [b, a]);
 });
