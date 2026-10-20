@@ -57,6 +57,11 @@ from ams2_protocol import (
     decode_telemetry,
 )
 
+# Versao exibida no console do rig. O workflow do pacote (pacote-rig.yml)
+# troca esta linha pela tag da release antes de gerar o executavel; o valor
+# aqui vale para quem roda direto do repositorio.
+VERSAO = "v1.10.8"
+
 EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
 DEFAULT_UDP_PORT = 5606
@@ -445,7 +450,7 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
                           args.driver_name, args.sample_hz)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
-    print(f"[info] escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
+    print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
     print(f"[info] destino: {dispatcher.describe()}")
 
     batch = []
@@ -465,7 +470,7 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
                 sent += len(batch)
                 batch = []
                 last_flush = time.time()
-                print(f"[info] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
+                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
                       end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")

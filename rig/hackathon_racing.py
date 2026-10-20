@@ -100,6 +100,18 @@ def limpar_collector_orfao() -> None:
     arquivo.unlink(missing_ok=True)
 
 
+def titulo_da_janela(texto: str) -> None:
+    """Versao e rig no titulo da janela do console: da' para conferir qual
+    pacote cada simulador roda sem rolar a tela ate' o cabecalho."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW(texto)
+    except Exception:  # titulo e' cosmetico; nunca derruba o rig
+        pass
+
+
 def carregar_config(caminho: Path) -> dict:
     """racing.ini (secao [rig]) com fallback para variaveis de ambiente."""
     valores = {
@@ -274,8 +286,9 @@ def main() -> int:
     config = carregar_config(args.config)
     porta = int(config["ams2_port"])
 
+    titulo_da_janela(f"Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']}")
     print("=" * 58)
-    print(f"  Hackathon Racing - {config['rig_id']} ({config['rig_name']})")
+    print(f"  Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']} ({config['rig_name']})")
     if config["driver_name"]:
         print(f"  Piloto: {config['driver_name']}")
     print(f"  UDP do AMS2: porta {porta}   |   destinos: {config['sink']}")
