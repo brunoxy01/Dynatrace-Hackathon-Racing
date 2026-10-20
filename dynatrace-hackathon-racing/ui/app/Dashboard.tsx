@@ -123,7 +123,17 @@ const LAP_MARGIN_AFTER_MS = 3000;
 // Só a telemetria do mapa recarrega sozinha — é o que precisa acompanhar a
 // pista. As tabelas de voltas NÃO: recarregar sozinha descartava a ordenação e
 // a página em que a pessoa estava, no meio da leitura. Elas têm botão próprio.
-const TELEMETRY_REFRESH_MS = 5000;
+const TELEMETRY_REFRESH_MS = 3000;
+// Os quadros ao vivo (mapa, piloto em destaque, velocidade máxima e o pulso)
+// olham SEMPRE uma janela curta e fixa, independente do seletor de período.
+// Antes eles varriam o período inteiro (7 dias por padrão) a cada recarga só
+// para ficar com as 10.000 amostras mais novas, e a consulta ficava mais lenta
+// conforme o evento acumulava dados. O seletor continua valendo para o que é
+// classificação: pódio, melhor volta e a tabela de voltas. A aba Dynatrace
+// Intelligence reaproveita a mesma consulta, mas analisa o período inteiro, então
+// lá a telemetria segue o seletor.
+const LIVE_WINDOW = {from: 'now()-2m', to: 'now()'};
+const LIVE_WINDOW_LABEL = 'últimos 2 min';
 const LAPS_REFRESH_MS = 15000;
 
 // sortType padrão do DataTable é 'text': sem marcar as colunas numéricas, 10
@@ -172,16 +182,19 @@ export const Dashboard = () => {
   const [lapsTime, setLapsTime] = useState(Date.now());
   const refresh = () => {setQueryTime(Date.now());setLapsTime(Date.now());};
   const atualizarVoltas = () => setLapsTime(Date.now());
-  const bounds = useMemo(() => ({from:parseTimeAsTimeValue(timeframe.from, queryTime)?.absoluteDate, to:parseTimeAsTimeValue(timeframe.to, queryTime)?.absoluteDate}), [timeframe, queryTime]);
+  const telemetryWindow = mode === 'live' ? LIVE_WINDOW : timeframe;
+  const bounds = useMemo(() => ({from:parseTimeAsTimeValue(telemetryWindow.from, queryTime)?.absoluteDate, to:parseTimeAsTimeValue(telemetryWindow.to, queryTime)?.absoluteDate}), [telemetryWindow.from, telemetryWindow.to, queryTime]);
   const lapBounds = useMemo(() => ({from:parseTimeAsTimeValue(timeframe.from, lapsTime)?.absoluteDate, to:parseTimeAsTimeValue(timeframe.to, lapsTime)?.absoluteDate}), [timeframe, lapsTime]);
   useEffect(() => {
-    if (mode !== 'live' || timeframe.to !== 'now()') return;
+    if (mode !== 'live') return;
+    // A telemetria ao vivo é sempre relativa a agora, então recarrega mesmo com
+    // um período fechado escolhido para a classificação.
     const telemetria = window.setInterval(() => setQueryTime(Date.now()), TELEMETRY_REFRESH_MS);
     // A lista de voltas só se recarrega sozinha no Ao vivo — é onde a volta
     // recém-concluída precisa aparecer sem ninguém pedir. No Placar e no Replay
     // isso descartava a ordenação e a página no meio da leitura, e lá o botão
-    // "Atualizar" manda.
-    const voltas = mode === 'live' ? window.setInterval(() => setLapsTime(Date.now()), LAPS_REFRESH_MS) : undefined;
+    // "Atualizar" manda. Com período fechado não há volta nova para buscar.
+    const voltas = timeframe.to === 'now()' ? window.setInterval(() => setLapsTime(Date.now()), LAPS_REFRESH_MS) : undefined;
     return () => {window.clearInterval(telemetria); if (voltas !== undefined) window.clearInterval(voltas);};
   }, [mode,timeframe.to]);
   const stream = useLocalTelemetry(mode === 'stream');
@@ -242,8 +255,11 @@ export const Dashboard = () => {
     return () => window.clearInterval(timer);
   }, [playing, replayEnded, mode, lapSamples, replayStep]);
   const janela = `${mode}|${timeframe.from}|${timeframe.to}`;
-  const liveData = useUltimoResultado(live.data, janela);
-  const liveOtelData = useUltimoResultado(liveOtel.data, janela);
+  // No Ao vivo a janela não muda com o seletor: trocar o período da
+  // classificação não deve apagar o mapa enquanto a próxima consulta não chega.
+  const janelaTelemetria = mode === 'live' ? mode : janela;
+  const liveData = useUltimoResultado(live.data, janelaTelemetria);
+  const liveOtelData = useUltimoResultado(liveOtel.data, janelaTelemetria);
   const liveLapsData = useUltimoResultado(liveLaps.data, janela);
   const liveLapsOtelData = useUltimoResultado(liveLapsOtel.data, janela);
   const events = useMemo(() => mode === 'stream' ? backfillIdentity(stream.events) : mode === 'replay' ? lapSamples.slice(0, cursor) : backfillIdentity(mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records))), [mode, cursor, lapSamples, liveData, liveOtelData, stream.events]);
@@ -334,7 +350,7 @@ export const Dashboard = () => {
   // Ticker próprio: o "sem telemetria há Ns" precisa subir sozinho entre as
   // reexecuções da consulta, que só acontecem a cada 30s.
   const [tick, setTick] = useState(0);
-  const pulsing = mode === 'live' && timeframe.to === 'now()';
+  const pulsing = mode === 'live';
   useEffect(() => {
     if (!pulsing) return;
     const timer = window.setInterval(() => setTick(v => v + 1), 5000);
@@ -392,7 +408,7 @@ export const Dashboard = () => {
     <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].car_name ?? 'Carro não informado') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
-    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? 'No período · até 10.000 eventos' : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
+    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? `Ao vivo · ${LIVE_WINDOW_LABEL}` : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
     {/* A volta mais rápida do PERÍODO, não "a mais rápida entre quem está com
         telemetria ao vivo agora": referenceLap já é o #1 do ranking (mesma
         fonte da tabela abaixo), então o KPI não depende de o piloto recorde
@@ -404,16 +420,16 @@ export const Dashboard = () => {
   const telaAoVivo = <>
     {mode === 'stream' && stream.error && <div className="notice error" role="alert">O script local não está conectado. Execute <code>python replay_server.py</code> na raiz do repositório. A pista mantém os últimos dados recebidos até a conexão voltar.</div>}
     {mode === 'live' && live.error && <div className="notice error" role="alert">Não foi possível consultar a telemetria: {live.error.message}. Verifique o acesso a business events e tente atualizar.</div>}
-    {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos foi encontrado no período selecionado. Amplie o intervalo ou confira a ingestão.</div>}
+    {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos chegou nos {LIVE_WINDOW_LABEL}. Confira se o rig está enviando. A classificação abaixo segue o período selecionado.</div>}
     {mode === 'live' && !live.error && liveOtel.error && <div className="notice" role="status">A fonte OTel (logs do collector do rig) não respondeu: {liveOtel.error.message}. O painel segue mostrando os business events.</div>}
     {mode === 'live' && events.length >= 10000 && <div className="notice">Exibindo os 10.000 eventos mais recentes. O mapa e os indicadores representam essa amostra.</div>}
     <div className="hero-grid">
       {mapa('Pista cinza · aguardando eventos', mode === 'stream' && stream.running ? <progress aria-label="Progresso da simulação" max={stream.total} value={events.length}/> : undefined)}
-      {painelDoPiloto(mode === 'live' ? 'Última leitura no período' : 'Dados de demonstração')}
+      {painelDoPiloto(mode === 'live' ? `Última leitura · ${LIVE_WINDOW_LABEL}` : 'Dados de demonstração')}
     </div>
     {indicadores}
     {podioEmpresas}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Top 10 voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">As dez voltas mais rápidas do período escolhido no seletor acima, da mais rápida para a mais lenta. Um piloto pode ocupar mais de uma posição. O mapa e a telemetria ao lado mostram sempre os {LIVE_WINDOW_LABEL}.</p><DataTable data={ranking.slice(0,10)} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
   </>;
 
   // ---------- Tela 2: histórico ----------
@@ -535,8 +551,8 @@ export const Dashboard = () => {
         </svg>
       </div>
       <div className="status-group">
-        {mode !== 'stream' && <TimeframeSelector aria-label="Período dos eventos" value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
-        <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : mode === 'intelligence' ? `${number(ranking.length)} ${ranking.length === 1 ? 'volta analisada' : 'voltas analisadas'}` : liveLoading ? 'Consultando período' : events.length ? 'Dados do Grail' : 'Sem eventos no período'}</div>
+        {mode !== 'stream' && <TimeframeSelector aria-label={mode === 'live' ? 'Período da classificação' : 'Período dos eventos'} value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
+        <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : mode === 'intelligence' ? `${number(ranking.length)} ${ranking.length === 1 ? 'volta analisada' : 'voltas analisadas'}` : liveLoading ? 'Consultando telemetria' : events.length ? 'Dados do Grail' : `Sem telemetria nos ${LIVE_WINDOW_LABEL}`}</div>
         {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
           <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
           {pulse.fresh
@@ -562,6 +578,6 @@ export const Dashboard = () => {
     <Tabs selectedIndex={abaAtual} onChange={i => changeMode(abas[i].id)}>
       {abas.map(aba => <Tab key={aba.id} title={aba.title}>{mode === aba.id ? corpo[aba.id] : null}</Tab>)}
     </Tabs>
-    <footer className="page-footer"><span>Dynatrace Racing</span><span>{mode === 'stream' ? 'Fonte: script local · sem ingestão' : mode === 'replay' ? 'Fonte: Grail · uma volta reproduzida em tempo real a partir das amostras gravadas' : 'Fonte: Grail · racing.telemetry · período selecionado'}</span></footer>
+    <footer className="page-footer"><span>Dynatrace Racing</span><span>{mode === 'stream' ? 'Fonte: script local · sem ingestão' : mode === 'replay' ? 'Fonte: Grail · uma volta reproduzida em tempo real a partir das amostras gravadas' : mode === 'live' ? `Fonte: Grail · racing.telemetry · telemetria dos ${LIVE_WINDOW_LABEL}, classificação no período selecionado` : 'Fonte: Grail · racing.telemetry · período selecionado'}</span></footer>
   </main>;
 };

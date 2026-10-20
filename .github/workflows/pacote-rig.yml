@@ -80,11 +80,14 @@ jobs:
           # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
           driver_name =
           ams2_port = 5606
-          sink = both
+          # otlp (padrao), bizevents ou both. "both" dobra o volume ingerido.
+          sink = otlp
           # Quanto o rig segura as amostras antes de enviar. Menor =
           # mapa mais perto do tempo real, mais requisicoes por segundo.
           batch_size = 10
           flush_interval = 0.5
+          # Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas.
+          sample_hz = 10
           dt_env_url = https://bwm98081.live.dynatrace.com
           dt_api_token = $env:DT_API_TOKEN_EVENTO
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini

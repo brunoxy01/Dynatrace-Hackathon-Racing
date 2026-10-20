@@ -109,11 +109,15 @@ def carregar_config(caminho: Path) -> dict:
         "dt_env_url": os.environ.get("DT_ENV_URL", ""),
         "dt_api_token": os.environ.get("DT_API_TOKEN", ""),
         "ams2_port": os.environ.get("AMS2_PORT", "5606"),
-        "sink": os.environ.get("RACING_SINK", "both"),
+        # Um caminho so': com "both" cada amostra era ingerida e consultada duas
+        # vezes. O OTLP tem fila e reenvio no collector; "both" segue valendo.
+        "sink": os.environ.get("RACING_SINK", "otlp"),
         # Quanto o rig segura as amostras antes de enviar. Baixar isto aproxima
         # o mapa do tempo real ao custo de mais requisicoes HTTPS por segundo.
         "batch_size": os.environ.get("RACING_BATCH_SIZE", "10"),
         "flush_interval": os.environ.get("RACING_FLUSH_INTERVAL", "0.5"),
+        # Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas.
+        "sample_hz": os.environ.get("RACING_SAMPLE_HZ", str(ams2_collector.DEFAULT_SAMPLE_HZ)),
     }
     if caminho.exists():
         parser = configparser.ConfigParser()
@@ -293,6 +297,7 @@ def main() -> int:
         driver_name=config["driver_name"] or None,
         bind="0.0.0.0", port=porta,
         batch_size=int(config["batch_size"]), flush_interval=float(config["flush_interval"]),
+        sample_hz=float(config["sample_hz"]),
         endpoint=config["dt_env_url"] or None, token=config["dt_api_token"] or None,
         sink=config["sink"], otlp_endpoint=ams2_collector.DEFAULT_OTLP_ENDPOINT,
         dry_run=args.dry_run,

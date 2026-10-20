@@ -23,9 +23,9 @@ processors:
     limit_mib: 256
     spike_limit_mib: 64
   batch:
-    send_batch_size: 200
+    send_batch_size: 50
     send_batch_max_size: 500
-    timeout: 2s
+    timeout: 1s
 
 exporters:
   debug:

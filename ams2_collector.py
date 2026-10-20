@@ -39,6 +39,7 @@ Uso:
 from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
 
 import argparse
+import http.client
 import json
 import os
 import queue
@@ -46,8 +47,7 @@ import socket
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -61,6 +61,10 @@ EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
 DEFAULT_UDP_PORT = 5606
 DEFAULT_OTLP_ENDPOINT = "http://127.0.0.1:4318/v1/logs"
+# O AMS2 manda ~20 quadros/s com UDP Frequency = 1. O mapa e os indicadores nao
+# ganham nada visivel com isso, e metade do volume e' metade do que ingerir e
+# consultar. 0 desliga o corte e envia todo quadro.
+DEFAULT_SAMPLE_HZ = 10.0
 OTLP_SERVICE_NAME = "ams2-rig"
 
 
@@ -104,8 +108,58 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
     }
 
 
-def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.0,
-               tentativas: int = 3) -> bool:
+class ConexaoHttp:
+    """Conexao HTTP(S) reaproveitada entre os POSTs.
+
+    O urllib abre um TCP + TLS novo a cada requisicao. Do Brasil ate o tenant
+    isso sao varias idas e voltas por lote, e com 2 lotes/s a thread de envio
+    nao dava conta: a fila crescia e o atraso subia minuto a minuto. Com
+    keep-alive o handshake acontece uma vez e cada lote custa um POST so'.
+
+    Nao e' thread-safe: cada thread de envio tem a sua.
+    """
+
+    def __init__(self, url: str, timeout: float = 10.0):
+        partes = urllib.parse.urlsplit(url)
+        self.https = partes.scheme == "https"
+        self.host = partes.hostname or "127.0.0.1"
+        self.port = partes.port
+        self.caminho = (partes.path or "/") + (f"?{partes.query}" if partes.query else "")
+        self.timeout = timeout
+        self._conn: Optional[http.client.HTTPConnection] = None
+
+    def _abrir(self) -> http.client.HTTPConnection:
+        classe = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
+        return classe(self.host, self.port, timeout=self.timeout)
+
+    def fechar(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def post(self, body: bytes, headers: dict):
+        """Devolve (status, corpo). Uma conexao ociosa que o servidor ja' fechou
+        so' e' descoberta no envio; nesse caso reabre e tenta de novo na hora,
+        sem gastar uma das tentativas com espera."""
+        for reaproveitada in ((self._conn is not None), False):
+            if self._conn is None:
+                self._conn = self._abrir()
+            try:
+                self._conn.request("POST", self.caminho, body=body, headers=headers)
+                resp = self._conn.getresponse()
+                corpo = resp.read()
+            except (http.client.HTTPException, OSError):
+                self.fechar()
+                if reaproveitada:
+                    continue
+                raise
+            if resp.will_close:
+                self.fechar()
+            return resp.status, corpo
+        raise OSError("conexao recusada")  # inalcancavel: o laco sempre retorna ou levanta
+
+
+def _post_json(conexao: ConexaoHttp, payload, headers: dict, what: str, tentativas: int = 3) -> bool:
     """POST com retry nas falhas transitorias.
 
     Rede de evento oscila: um handshake TLS que estoura o tempo derrubava o lote
@@ -113,22 +167,21 @@ def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.
     escopo faltando nao melhoram insistindo, so' atrasam o proximo lote.
     """
     body = json.dumps(payload).encode("utf-8")
+    cabecalhos = {"Content-Type": "application/json", **headers}
     ultimo = "desconhecido"
     for tentativa in range(1, tentativas + 1):
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                resp.read()
-            if tentativa > 1:
-                print(f"[info] {what}: entregue na tentativa {tentativa}", file=sys.stderr)
-            return True
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")
-            if e.code < 500 and e.code != 429:
-                print(f"[erro] {what}: HTTP {e.code} - {detail[:300]}", file=sys.stderr)
+            status, corpo = conexao.post(body, cabecalhos)
+            if 200 <= status < 300:
+                if tentativa > 1:
+                    print(f"[info] {what}: entregue na tentativa {tentativa}", file=sys.stderr)
+                return True
+            detail = corpo.decode("utf-8", "replace")
+            if status < 500 and status != 429:
+                print(f"[erro] {what}: HTTP {status} - {detail[:300]}", file=sys.stderr)
                 return False
-            ultimo = f"HTTP {e.code} - {detail[:150]}"
-        except (urllib.error.URLError, OSError) as e:
+            ultimo = f"HTTP {status} - {detail[:150]}"
+        except (http.client.HTTPException, OSError) as e:
             ultimo = f"falha de conexao - {e}"
         if tentativa < tentativas:
             time.sleep(min(2 ** (tentativa - 1), 4))
@@ -136,12 +189,12 @@ def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.
     return False
 
 
-def post_events(url: str, token: Optional[str], events: list, timeout: float = 10.0) -> None:
+def post_events(conexao: ConexaoHttp, token: Optional[str], events: list) -> None:
     """Envia para a Business Events API (/api/v2/bizevents/ingest)."""
     if not events:
         return
     headers = {"Authorization": f"Api-Token {token}"} if token else {}
-    _post_json(url, events, headers, f"bizevents ({len(events)} evento(s))", timeout)
+    _post_json(conexao, events, headers, f"bizevents ({len(events)} evento(s))")
 
 
 def _otlp_value(value):
@@ -160,7 +213,7 @@ def _otlp_value(value):
 def build_otlp_payload(events: list) -> dict:
     """Monta um ExportLogsServiceRequest em OTLP/HTTP JSON.
 
-    Usa urllib da stdlib de proposito: os rigs sao maquinas de jogo Windows e
+    So' stdlib de proposito: os rigs sao maquinas de jogo Windows e
     exigir `pip install opentelemetry-sdk` neles seria atrito desnecessario.
     """
     records = []
@@ -188,16 +241,16 @@ def build_otlp_payload(events: list) -> dict:
     }]}
 
 
-def post_otlp(url: str, events: list, timeout: float = 10.0) -> None:
+def post_otlp(conexao: ConexaoHttp, events: list) -> None:
     """Envia para o OTel Collector local, que repassa ao Dynatrace."""
     if not events:
         return
-    _post_json(url, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))", timeout)
+    _post_json(conexao, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))")
 
 
 class Collector:
     def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str,
-                 driver_name: Optional[str] = None):
+                 driver_name: Optional[str] = None, sample_hz: float = 0.0):
         self.state = SessionState()
         self.rig_id = rig_id
         self.rig_name = rig_name
@@ -206,10 +259,18 @@ class Collector:
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
         self._sample_seq = 0
+        # Folga de 10% no intervalo: com o jogo a 20 Hz e jitter de rede, um
+        # corte exato em 100 ms deixaria passar ora 1, ora 2 quadros em cada 3.
+        self._intervalo = 0.9 / sample_hz if sample_hz > 0 else 0.0
+        self._ultimo_envio: Optional[float] = None
 
-    def handle_packet(self, raw: bytes) -> Optional[dict]:
+    def handle_packet(self, raw: bytes, agora: Optional[float] = None) -> Optional[dict]:
         """Processa um pacote UDP cru; retorna um evento pronto quando um
-        frame de telemetria (packetType 0) for decodificado, ou None."""
+        frame de telemetria (packetType 0) for decodificado, ou None.
+
+        `agora` e' o relogio usado no corte de frequencia (segundos). O replay
+        passa o horario gravado na captura, para que --speed 0 nao descarte
+        quase tudo; no UDP ao vivo vale o relogio da maquina."""
         if len(raw) < 12:
             return None
         header = decode_header(raw)
@@ -225,6 +286,13 @@ class Collector:
         elif header.packet_type == 8:
             self.state.ingest_vehicle_names(raw, len(raw))
         elif header.packet_type == 0:
+            # Os pacotes de estado (voltas, nomes) acima sao sempre processados;
+            # so' a amostra de telemetria e' rarefeita.
+            if self._intervalo:
+                instante = time.monotonic() if agora is None else agora
+                if self._ultimo_envio is not None and instante - self._ultimo_envio < self._intervalo:
+                    return None
+                self._ultimo_envio = instante
             telemetry = decode_telemetry(raw)
             self._sample_seq += 1
             return build_event(
@@ -236,44 +304,62 @@ class Collector:
 
 
 class EnvioEmSegundoPlano:
-    """Tira o POST remoto da thread que le o socket UDP.
+    """Tira o POST da thread que le o socket UDP.
 
     Sem isto, uma rede lenta trava o recvfrom por dezenas de segundos e o buffer
     do socket transborda: perde-se telemetria que o jogo ja' tinha mandado. A fila
     e' limitada de proposito - se o destino ficar fora do ar por muito tempo,
-    e' melhor descartar o mais antigo e avisar do que inchar a memoria do rig.
+    descarta o lote MAIS ANTIGO: num painel ao vivo, o dado novo vale mais.
+
+    Cada thread tem a sua conexao keep-alive (`criar_envio` e' chamado uma vez
+    por thread). Mais de uma thread deixa um POST lento nao segurar os demais;
+    a ordem de chegada nao importa, porque cada amostra leva o proprio timestamp.
     """
 
-    def __init__(self, envia, nome: str, limite: int = 500):
+    def __init__(self, criar_envio, nome: str, limite: int = 300, trabalhadores: int = 1):
         self.fila: "queue.Queue[list]" = queue.Queue(maxsize=limite)
-        self.envia = envia
         self.nome = nome
         self.descartados = 0
-        self.thread = threading.Thread(target=self._laco, name=f"envio-{nome}", daemon=True)
-        self.thread.start()
+        self.threads = [
+            threading.Thread(target=self._laco, args=(criar_envio,), name=f"envio-{nome}-{i}", daemon=True)
+            for i in range(trabalhadores)
+        ]
+        for thread in self.threads:
+            thread.start()
 
-    def _laco(self) -> None:
+    def _laco(self, criar_envio) -> None:
+        envia = criar_envio()
         while True:
             lote = self.fila.get()
             try:
                 if lote:
-                    self.envia(lote)
+                    envia(lote)
             except Exception as erro:  # nunca deixar a thread de envio morrer
                 print(f"[erro] {self.nome}: {erro}", file=sys.stderr)
             finally:
                 self.fila.task_done()
 
     def enfileirar(self, lote: list) -> None:
-        try:
-            self.fila.put_nowait(lote)
-        except queue.Full:
-            self.descartados += len(lote)
-            print(f"[!!] {self.nome}: fila cheia, {self.descartados} amostras descartadas no total",
-                  file=sys.stderr)
+        while True:
+            try:
+                self.fila.put_nowait(lote)
+                return
+            except queue.Full:
+                try:
+                    antigo = self.fila.get_nowait()
+                except queue.Empty:
+                    continue
+                self.fila.task_done()
+                self.descartados += len(antigo)
+                print(f"[!!] {self.nome}: fila cheia, {self.descartados} amostras antigas descartadas no total",
+                      file=sys.stderr)
+
+    def pendentes(self) -> int:
+        return self.fila.qsize()
 
     def drenar(self, segundos: float = 15.0) -> None:
         limite = time.time() + segundos
-        while not self.fila.empty() and time.time() < limite:
+        while self.fila.unfinished_tasks and time.time() < limite:
             time.sleep(0.2)
 
 
@@ -285,11 +371,23 @@ class Dispatcher:
         self.ingest_url = ingest_url
         self.to_bizevents = args.sink in ("bizevents", "both") and bool(ingest_url) and not args.dry_run
         self.to_otlp = args.sink in ("otlp", "both") and not args.dry_run
-        # So' o bizevents sai da maquina; o OTLP vai para o collector em 127.0.0.1,
-        # que aceita na hora e ja' tem fila em disco e reenvio proprios.
-        self._bizevents = EnvioEmSegundoPlano(
-            lambda lote: post_events(self.ingest_url, self.args.token, lote), "bizevents",
-        ) if self.to_bizevents else None
+        # Os dois destinos saem da thread do UDP. O bizevents cruza a internet e
+        # ganha 2 threads; o OTLP vai para o collector em 127.0.0.1, que responde
+        # na hora e ja' tem fila e reenvio proprios, entao 1 thread basta.
+        self._bizevents = EnvioEmSegundoPlano(self._envio_bizevents, "bizevents", trabalhadores=2) \
+            if self.to_bizevents else None
+        self._otlp = EnvioEmSegundoPlano(self._envio_otlp, "otlp") if self.to_otlp else None
+
+    def _envio_bizevents(self):
+        conexao = ConexaoHttp(self.ingest_url)
+        return lambda lote: post_events(conexao, self.args.token, lote)
+
+    def _envio_otlp(self):
+        conexao = ConexaoHttp(self.args.otlp_endpoint)
+        return lambda lote: post_otlp(conexao, lote)
+
+    def _filas(self):
+        return [f for f in (self._bizevents, self._otlp) if f is not None]
 
     def describe(self) -> str:
         if self.args.dry_run:
@@ -304,23 +402,26 @@ class Dispatcher:
     def enabled(self) -> bool:
         return self.to_bizevents or self.to_otlp
 
+    def pendentes(self) -> int:
+        """Lotes esperando envio. Se isto so' cresce, o destino nao acompanha o
+        rig e o atraso no painel vai subir junto."""
+        return sum(f.pendentes() for f in self._filas())
+
     def flush(self, batch: list) -> None:
         if not batch:
             return
-        if self._bizevents is not None:
-            self._bizevents.enfileirar(list(batch))
-        if self.to_otlp:
-            post_otlp(self.args.otlp_endpoint, batch)
+        for fila in self._filas():
+            fila.enfileirar(list(batch))
 
     def encerrar(self) -> None:
         """Da' chance de a fila esvaziar antes de o processo morrer."""
-        if self._bizevents is not None:
-            self._bizevents.drenar()
+        for fila in self._filas():
+            fila.drenar()
 
 
 def run_udp(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
-                          args.driver_name)
+                          args.driver_name, args.sample_hz)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
     print(f"[info] escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
@@ -343,7 +444,8 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
                 sent += len(batch)
                 batch = []
                 last_flush = time.time()
-                print(f"[info] {sent} amostras enviadas", end="\r", flush=True)
+                print(f"[info] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
+                      end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")
         dispatcher.flush(batch)
@@ -356,7 +458,7 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
 
 def run_replay(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real",
-                          args.driver_name)
+                          args.driver_name, args.sample_hz)
     print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
@@ -386,7 +488,7 @@ def run_replay(args, dispatcher: "Dispatcher") -> int:
                     time.sleep(min(delay, 1.0))
             prev_t = t
 
-            ev = collector.handle_packet(raw)
+            ev = collector.handle_packet(raw, t.timestamp())
             n += 1
             if ev:
                 if not dispatcher.enabled():
@@ -422,6 +524,10 @@ def main() -> int:
     # otel/otelcol-racing.yaml). Baixar os dois reduz o atraso percebido; o
     # resto (ingestão e indexação no Grail) não é configurável por aqui.
     parser.add_argument("--flush-interval", type=float, default=0.5, help="segundos entre envios ao Dynatrace")
+    parser.add_argument(
+        "--sample-hz", type=float, default=float(os.environ.get("RACING_SAMPLE_HZ", DEFAULT_SAMPLE_HZ)),
+        help=f"amostras de telemetria por segundo enviadas (default: {DEFAULT_SAMPLE_HZ:g}; 0 = todas as do jogo)",
+    )
     parser.add_argument(
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",

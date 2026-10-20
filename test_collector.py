@@ -1,8 +1,17 @@
 import json
+import threading
+import time
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 
-from ams2_collector import build_otlp_payload
+from ams2_collector import (
+    Collector,
+    ConexaoHttp,
+    EnvioEmSegundoPlano,
+    build_otlp_payload,
+    post_otlp,
+)
 
 
 class OtlpPayloadTests(unittest.TestCase):
@@ -45,6 +54,111 @@ class OtlpPayloadTests(unittest.TestCase):
 
     def test_payload_is_serializable_as_json(self):
         json.dumps(build_otlp_payload([self.evento]))
+
+
+def _pacote_telemetria() -> bytes:
+    """Primeiro quadro de telemetria (packetType 0) da captura real."""
+    with open("captura.txt", encoding="utf-8") as f:
+        for linha in f:
+            partes = linha.rstrip("\n").split("\t")
+            if len(partes) == 4:
+                bruto = bytes.fromhex(partes[3])
+                if len(bruto) >= 12 and bruto[10] == 0:
+                    return bruto
+    raise AssertionError("captura sem quadro de telemetria")
+
+
+class SampleRateTests(unittest.TestCase):
+    def _enviados(self, sample_hz: float, fonte_hz: float = 20.0, segundos: float = 10.0) -> int:
+        collector = Collector("rig", "Rig", "s", "real", sample_hz=sample_hz)
+        pacote = _pacote_telemetria()
+        quadros = int(fonte_hz * segundos)
+        return sum(1 for i in range(quadros) if collector.handle_packet(pacote, i / fonte_hz))
+
+    def test_20hz_from_the_game_becomes_10hz(self):
+        self.assertEqual(100, self._enviados(10.0))
+
+    def test_zero_keeps_every_frame(self):
+        self.assertEqual(200, self._enviados(0.0))
+
+    def test_jitter_does_not_drop_below_target(self):
+        collector = Collector("rig", "Rig", "s", "real", sample_hz=10.0)
+        pacote = _pacote_telemetria()
+        # quadros a 20 Hz com ate' 8 ms de atraso alternado
+        instantes = [i * 0.05 + (0.008 if i % 2 else 0.0) for i in range(200)]
+        enviados = sum(1 for t in instantes if collector.handle_packet(pacote, t))
+        self.assertGreaterEqual(enviados, 95)
+        self.assertLessEqual(enviados, 105)
+
+
+class _Contador(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive
+    conexoes = set()
+    corpos = []
+
+    def do_POST(self):
+        _Contador.conexoes.add(self.client_address)
+        _Contador.corpos.append(self.rfile.read(int(self.headers["Content-Length"])))
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+
+class KeepAliveTests(unittest.TestCase):
+    def setUp(self):
+        _Contador.conexoes = set()
+        _Contador.corpos = []
+        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), _Contador)
+        threading.Thread(target=self.servidor.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.servidor.server_port}/v1/logs"
+
+    def tearDown(self):
+        self.servidor.shutdown()
+        self.servidor.server_close()
+
+    def test_many_batches_reuse_one_connection(self):
+        conexao = ConexaoHttp(self.url)
+        for _ in range(5):
+            post_otlp(conexao, [OtlpPayloadTests.evento])
+        conexao.fechar()
+        self.assertEqual(5, len(_Contador.corpos))
+        self.assertEqual(1, len(_Contador.conexoes))
+
+    def test_reconnects_when_server_dropped_idle_connection(self):
+        conexao = ConexaoHttp(self.url)
+        post_otlp(conexao, [OtlpPayloadTests.evento])
+        conexao._conn.sock.close()  # simula o servidor fechando a conexao ociosa
+        inicio = time.time()
+        post_otlp(conexao, [OtlpPayloadTests.evento])
+        conexao.fechar()
+        self.assertEqual(2, len(_Contador.corpos))
+        self.assertLess(time.time() - inicio, 0.9, "reabrir nao deve esperar o backoff")
+
+
+class FilaTests(unittest.TestCase):
+    def test_full_queue_drops_the_oldest_batch(self):
+        liberar = threading.Event()
+        recebidos = []
+
+        def criar_envio():
+            def envia(lote):
+                liberar.wait()
+                recebidos.append(lote[0])
+            return envia
+
+        fila = EnvioEmSegundoPlano(criar_envio, "teste", limite=2)
+        fila.enfileirar([0])          # a thread pega este e fica presa
+        time.sleep(0.1)
+        for i in (1, 2, 3):
+            fila.enfileirar([i])      # 1 e' descartado quando 3 chega
+        liberar.set()
+        fila.drenar(2)
+        self.assertEqual([0, 2, 3], recebidos)
+        self.assertEqual(1, fila.descartados)
 
 
 if __name__ == "__main__":
