@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -123,7 +123,6 @@ const LAP_MARGIN_AFTER_MS = 3000;
 // Só a telemetria do mapa recarrega sozinha — é o que precisa acompanhar a
 // pista. As tabelas de voltas NÃO: recarregar sozinha descartava a ordenação e
 // a página em que a pessoa estava, no meio da leitura. Elas têm botão próprio.
-const TELEMETRY_REFRESH_MS = 3000;
 // Os quadros ao vivo (mapa, piloto em destaque, velocidade máxima e o pulso)
 // olham SEMPRE uma janela curta e fixa, independente do seletor de período.
 // Antes eles varriam o período inteiro (7 dias por padrão) a cada recarga só

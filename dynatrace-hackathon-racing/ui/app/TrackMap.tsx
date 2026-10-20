@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
-import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, advancePlayback, driverKey } from './racing';
+import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, driverKey } from './racing';
 
 // Fixed world-to-map transform shared by the reference and live samples.
 const project = (x: number, y: number) => ({x: 54 + (y + 486) * .53, y: 40 + (x + 480) * .53});
@@ -24,10 +24,6 @@ export function referencePointCoords(referencePoint: number): {x: number; y: num
 }
 
 const PLAYBACK_STEP_MS = 50;
-// Quanto o relógio de reprodução anda atrás da amostra mais nova. Precisa cobrir
-// o intervalo entre consultas mais a latência de ingestão do Grail; abaixo disso
-// a animação alcança o fim do bloco e trava até a próxima consulta chegar.
-const PLAYBACK_TRAIL_MS = 8000;
 
 // Caminha pelo bloco de amostras em tempo real; a regra de cada passo (e a
 // ressincronização) está em advancePlayback, que é testada à parte.

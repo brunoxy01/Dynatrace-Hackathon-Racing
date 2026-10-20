@@ -163,14 +163,14 @@ Por que os dois caminhos coexistem: business events e OTLP são ingestões disti
 
 O caminho OTLP ganha o que a API direta não tem: **fila em disco e reenvio automático**. Se a rede do evento oscilar, o collector segura as amostras em `fila-otel/` e as entrega depois.
 
-No rig (`racing.ini` / `config.bat`) o padrão é `sink = otlp`: com `both` cada amostra é ingerida e consultada duas vezes. `both` continua disponível para quem quiser redundância.
+No rig (`racing.ini` / `config.bat`) o padrão é `sink = bizevents`, o caminho confirmado no tenant do evento: dispensa o collector local, e com `both` cada amostra seria ingerida e consultada duas vezes. `otlp` exige o escopo `logs.ingest` no token.
 
 **Latência.** O que mais pesava no atraso até o painel:
 
 - envio: cada POST abria um TCP + TLS novo, a thread única não acompanhava 2 lotes/s e a fila crescia. Agora a conexão é reaproveitada (keep-alive), o envio sai da thread do UDP nos dois caminhos e, com a fila cheia, o lote **mais antigo** é que cai;
 - volume: `--sample-hz` (padrão 10, `sample_hz` no `racing.ini`) rarefaz os ~20 quadros/s do jogo. Os pacotes de volta e de nomes continuam todos processados; `0` envia tudo;
 - collector: `batch.timeout` caiu para 1 s (lote de 50) e o primeiro reenvio de 5 s para 1 s;
-- app: na aba Ao vivo, mapa, piloto em destaque, velocidade máxima e o pulso consultam sempre os **últimos 2 minutos**, recarregando a cada 3 s. O seletor de período vale para a classificação (pódio, melhor volta e Top 10) e para a aba Dynatrace Intelligence.
+- app: na aba Ao vivo, mapa, piloto em destaque, velocidade máxima e o pulso consultam sempre os **últimos 2 minutos**, recarregando a cada 2 s, e o carro anda 5 s atrás da amostra mais nova (era 8 s). O seletor de período vale para a classificação (pódio, melhor volta e Top 10) e para a aba Dynatrace Intelligence.
 
 A linha de progresso do coletor mostra `fila: N lote(s)`. Se esse número só cresce, o destino não acompanha o rig.
 

@@ -26,9 +26,10 @@ set DT_OTLP_ENDPOINT=%DT_ENV_URL%/api/v2/otlp
 rem --- Porta UDP que o AMS2 transmite (Options > System > UDP). ---
 set AMS2_PORT=5606
 
-rem --- Destinos: otlp (recomendado), bizevents ou both.         ---
+rem --- Destinos: bizevents (recomendado), otlp ou both.         ---
+rem --- otlp precisa do escopo logs.ingest no token.              ---
 rem --- "both" manda cada amostra duas vezes e dobra o volume.    ---
-set RACING_SINK=otlp
+set RACING_SINK=bizevents
 
 rem --- Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas. ---
 set RACING_SAMPLE_HZ=10

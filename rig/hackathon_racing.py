@@ -110,8 +110,9 @@ def carregar_config(caminho: Path) -> dict:
         "dt_api_token": os.environ.get("DT_API_TOKEN", ""),
         "ams2_port": os.environ.get("AMS2_PORT", "5606"),
         # Um caminho so': com "both" cada amostra era ingerida e consultada duas
-        # vezes. O OTLP tem fila e reenvio no collector; "both" segue valendo.
-        "sink": os.environ.get("RACING_SINK", "otlp"),
+        # vezes. Bizevents e' o caminho confirmado no tenant do evento (o OTLP
+        # depende de o token ter logs.ingest) e dispensa o collector local.
+        "sink": os.environ.get("RACING_SINK", "bizevents"),
         # Quanto o rig segura as amostras antes de enviar. Baixar isto aproxima
         # o mapa do tempo real ao custo de mais requisicoes HTTPS por segundo.
         "batch_size": os.environ.get("RACING_BATCH_SIZE", "10"),

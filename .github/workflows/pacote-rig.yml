@@ -80,8 +80,10 @@ jobs:
           # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
           driver_name =
           ams2_port = 5606
-          # otlp (padrao), bizevents ou both. "both" dobra o volume ingerido.
-          sink = otlp
+          # bizevents (padrao), otlp ou both. "both" dobra o volume ingerido.
+          # O caminho OTLP depende de o token ter logs.ingest; no tenant do
+          # evento so' o bizevents foi confirmado entregando.
+          sink = bizevents
           # Quanto o rig segura as amostras antes de enviar. Menor =
           # mapa mais perto do tempo real, mais requisicoes por segundo.
           batch_size = 10

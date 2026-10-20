@@ -256,6 +256,18 @@ export function startsAtLine(samples: Telemetry[]): boolean {
 // coberta pelo bloco atual: troca de período, aba em segundo plano (o navegador
 // congela os timers) ou uma pausa longa na telemetria. O alvo da
 // ressincronização é `trail` atrás do fim, para sobrar pista a percorrer.
+// Recarga da telemetria do Ao vivo. A consulta cobre só os últimos 2 minutos,
+// então sai barata, e a troca de dados não aparece na tela.
+export const TELEMETRY_REFRESH_MS = 2000;
+// Quanto o relógio de reprodução do Ao vivo anda atrás da amostra mais nova. É a
+// maior parcela do atraso jogo → mapa. Precisa cobrir o intervalo entre consultas
+// MAIS a variação do atraso de ingestão no Grail (o rastro >= recarga + (atraso
+// máx. − atraso mín.)); abaixo disso a animação alcança o fim do bloco e o carro
+// para até a próxima consulta. Era 8s, dimensionado para a recarga antiga de 5s.
+// As duas constantes ficam aqui, e não nos componentes, para o teste de regime
+// usar os valores de verdade.
+export const PLAYBACK_TRAIL_MS = 5000;
+
 export function advancePlayback(clock: number, oldest: number, newest: number, step: number, trail: number): number {
   if (clock > newest || clock < Math.max(oldest, newest - 2 * trail)) return Math.max(oldest, newest - trail);
   return Math.min(newest, clock + step);

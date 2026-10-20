@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -174,6 +174,28 @@ test('playback keeps up with a 5s refresh instead of drifting or stalling', () =
   assert.equal(stalled,0,'o carro nunca deve congelar entre consultas');
   assert.equal(resyncs,0,'o regime estável não deve precisar de ressincronização');
   assert.ok(newest - clock <= TRAIL, `o atraso final (${newest-clock}ms) deve caber no rastro`);
+});
+test('the live trail survives the live refresh with uneven Grail ingestion', () => {
+  // Regime do Ao vivo: consulta a cada TELEMETRY_REFRESH_MS e a amostra mais nova chegando com
+  // 1 a 3,5 s de atraso, variando a cada consulta. Sequência fixa, não aleatória,
+  // para o teste ser reproduzível; inclui o pior salto (1 s → 3,5 s).
+  const atrasos = [1000, 3500, 1200, 2800, 1000, 3500, 2000, 3000, 1500, 3500];
+  let now = 100000, newest = now - atrasos[0], clock = Math.max(0, newest - PLAYBACK_TRAIL_MS);
+  let stalled = 0, resyncs = 0, maiorAtraso = 0;
+  for (let cycle = 0; cycle < 60; cycle++) {
+    for (let frame = 0; frame < TELEMETRY_REFRESH_MS / STEP; frame++) {
+      const next = advancePlayback(clock, 0, newest, STEP, PLAYBACK_TRAIL_MS);
+      if (next === clock) stalled++;
+      if (next < clock) resyncs++;
+      clock = next;
+      now += STEP;
+      maiorAtraso = Math.max(maiorAtraso, now - clock);
+    }
+    newest = now - atrasos[cycle % atrasos.length];
+  }
+  assert.equal(stalled, 0, 'o carro nunca deve congelar entre consultas');
+  assert.equal(resyncs, 0, 'o regime estável não deve precisar de ressincronização');
+  assert.ok(maiorAtraso <= PLAYBACK_TRAIL_MS + 3500, `atraso jogo → mapa (${maiorAtraso}ms) acima do esperado`);
 });
 test('unfinished or last laps never become validated best laps', () => {
   const result = summarize([{...sample,last_lap_s:104.015}]);
