@@ -12,7 +12,7 @@ import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -85,6 +85,9 @@ const QUERY = `fetch bizevents
 // max() dentro deste summarize daria a máxima da volta errada. A volta
 // concluída é `lap_number - 1`; o lookup traz a máxima dela, com o mesmo corte
 // de quadros de teleporte/batida do parseEvents.
+// Setores: o coletor já manda S1/S2/S3 da volta em `last_lap_s` nos mesmos
+// quadros, então vêm do próprio agrupamento. max() e não takeAny(): ignora os
+// quadros sem setor (coletor que entrou no meio da volta, ou anteriores à v1.10.5).
 const LAPS = (fonte: string) => `fetch ${fonte}
 | filter event.type == "racing.telemetry"
 | filter isNotNull(last_lap_s) and last_lap_s > 0
@@ -94,7 +97,10 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     timestamp = min(timestamp),
     lap_number = min(lap_number),
     driver_name = takeAny(driver_name),
-    car_name = takeAny(car_name)
+    car_name = takeAny(car_name),
+    last_lap_s1 = max(last_lap_s1),
+    last_lap_s2 = max(last_lap_s2),
+    last_lap_s3 = max(last_lap_s3)
   }, by: {\`rig.id\`, \`session.id\`, last_lap_s}
 | fieldsAdd lap_key = concat(\`rig.id\`, "|", \`session.id\`, "|", toString(toLong(lap_number) - 1))
 | lookup [
@@ -161,12 +167,20 @@ const LAPS_REFRESH_MS = 15000;
 type Ranked = Telemetry & {position: number};
 // Sem máxima (volta que começou antes do período, ou amostras já fora da
 // retenção) a célula mostra "—" e a linha vai para o fim ao ordenar.
+// S1, S2 e S3 logo depois do tempo da volta, nas duas tabelas de voltas.
+// Voltas sem setores (gravadas antes da v1.10.5 do coletor, ou em que o coletor
+// entrou no meio) mostram "—".
+const SECTOR_COLUMNS: DataTableColumnDef<Telemetry>[] = ([['s1', 'last_lap_s1'], ['s2', 'last_lap_s2'], ['s3', 'last_lap_s3']] as const).map(([id, campo]) => ({
+  id, header: id.toUpperCase(), accessor: campo, minWidth: 90, sortType: 'number', sortAccessor: (row: Telemetry) => row[campo] ?? Infinity,
+  cell: ({rowData}: {rowData: Telemetry}) => <>{sectorTime(rowData[campo])}</>,
+}));
 const TOP_SPEED_COLUMN: DataTableColumnDef<Telemetry> = { id: 'top_speed', header: 'Vel. máxima', accessor: 'top_speed_kmh', minWidth: 120, sortType: 'number', sortAccessor: row => row.top_speed_kmh ?? -1,
   cell: ({rowData}) => <>{finite(rowData.top_speed_kmh) ? `${number(rowData.top_speed_kmh, 1)} km/h` : '—'}</> };
 const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  ...SECTOR_COLUMNS,
   TOP_SPEED_COLUMN,
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
   { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
@@ -405,6 +419,7 @@ export const Dashboard = () => {
     { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
     { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
       cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
+    ...SECTOR_COLUMNS,
     TOP_SPEED_COLUMN,
     { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
     { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },

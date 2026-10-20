@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -582,4 +582,12 @@ test('samples without a sequence fall back to timestamp order', () => {
   assert.equal(sampleSeq(sample), null);
   const a = {...sample, timestamp:'2026-09-19T00:00:02Z'}, b = {...sample, timestamp:'2026-09-19T00:00:01Z'};
   assert.deepEqual(inSampleOrder([a, b]), [b, a]);
+});
+
+test('sector times read as seconds below a minute and m:ss above', () => {
+  assert.equal(sectorTime(24.653), '24.653');
+  assert.equal(sectorTime(57.54), '57.540');
+  assert.equal(sectorTime(62.345), '1:02.345');
+  assert.equal(sectorTime(null), '—');
+  assert.equal(parseEvents([{...sample, last_lap_s1:24.653, last_lap_s2:57.54, last_lap_s3:21.822}])[0].last_lap_s3, 21.822);
 });

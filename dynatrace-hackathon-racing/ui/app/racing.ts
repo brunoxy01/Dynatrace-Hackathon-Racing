@@ -21,6 +21,10 @@ export interface Telemetry {
   // Só nas linhas de volta concluída (consulta LAPS): velocidade máxima DENTRO
   // da volta, calculada no Grail.
   top_speed_kmh?: number | null;
+  // Setores da volta concluída (s), enviados pelo coletor a partir da v1.10.5.
+  last_lap_s1?: number | null;
+  last_lap_s2?: number | null;
+  last_lap_s3?: number | null;
 }
 
 export type Metric = 'speed_kmh' | 'brake_pct' | 'acceleration_g';
@@ -59,7 +63,8 @@ export function parseEvents(input: unknown): Telemetry[] {
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
-      lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position'), top_speed_kmh:speed('top_speed_kmh')}];
+      lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position'), top_speed_kmh:speed('top_speed_kmh'),
+      last_lap_s1:num('last_lap_s1'), last_lap_s2:num('last_lap_s2'), last_lap_s3:num('last_lap_s3')}];
   });
 }
 // A mesma amostra pode chegar ao Grail por dois caminhos: bizevents (API direta)
@@ -121,6 +126,11 @@ export function lapTime(value: number | null | undefined): string {
   if (!finite(value) || value <= 0) return '—';
   const ms = Math.round(value * 1000);
   return `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
+}
+// Tempo de setor: "24.653" abaixo de um minuto, "1:02.345" acima.
+export function sectorTime(value: number | null | undefined): string {
+  if (!finite(value) || value <= 0) return '—';
+  return value < 60 ? value.toFixed(3) : lapTime(value);
 }
 export const number = (v: number | null | undefined, digits = 0) => finite(v) ? v.toLocaleString('pt-BR', { maximumFractionDigits: digits }) : '—';
 // Identidade de uma participação = simulador + sessão (o coletor gera uma

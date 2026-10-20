@@ -91,6 +91,34 @@ class SampleRateTests(unittest.TestCase):
         self.assertLessEqual(enviados, 105)
 
 
+class SectorTests(unittest.TestCase):
+    def _eventos(self):
+        collector = Collector("rig", "Rig", "s", "real")
+        with open("captura.txt", encoding="utf-8") as f:
+            for linha in f:
+                partes = linha.rstrip("\n").split("\t")
+                if len(partes) == 4:
+                    evento = collector.handle_packet(bytes.fromhex(partes[3]))
+                    if evento:
+                        yield evento
+
+    def test_completed_lap_carries_its_three_sectors(self):
+        """Volta 1 da captura: 104,015 s. S1 e S2 saem do cronometro na virada
+        de setor; S3 fecha com o tempo oficial (o jogo reporta 21,821 como
+        ultimo setor - a diferenca e' arredondamento)."""
+        voltas = {(e["last_lap_s"], e["last_lap_s1"], e["last_lap_s2"], e["last_lap_s3"])
+                  for e in self._eventos() if e["last_lap_s"]}
+        self.assertEqual({(104.015, 24.653, 57.54, 21.822)}, voltas)
+
+    def test_lap_joined_midway_has_no_sectors(self):
+        # A captura comeca no meio de uma volta: antes da primeira volta
+        # completa, nenhum quadro inventa setores.
+        for evento in self._eventos():
+            if not evento["last_lap_s"]:
+                self.assertIsNone(evento["last_lap_s1"])
+                self.assertIsNone(evento["last_lap_s3"])
+
+
 class _Contador(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive
     conexoes = set()

@@ -76,6 +76,7 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
                  telemetry: dict, timings: Optional[dict], source: str,
                  sample_seq: int = 0, driver_name: Optional[str] = None) -> dict:
     nome_do_jogo = (state.driver_name or "").strip() or None
+    s1, s2, s3 = state.sectors_of_last_lap()
     return {
         "timestamp": iso_now(),
         # Identidade unica da amostra. Quando bizevents e OTLP rodam juntos o mesmo
@@ -102,6 +103,10 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "lap_race_position": timings["lap_race_position"] if timings else None,
         "best_lap_s": state.best_lap_s,
         "last_lap_s": state.last_lap_s,
+        # Setores da volta em last_lap_s; nulos se o coletor entrou no meio dela.
+        "last_lap_s1": s1,
+        "last_lap_s2": s2,
+        "last_lap_s3": s3,
         "lap_invalidated": timings["lap_invalidated"] if timings else None,
         "track_name": state.track_location,
         "lap_number": timings["lap_number"] if timings else None,
