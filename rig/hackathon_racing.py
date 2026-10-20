@@ -209,7 +209,27 @@ def subir_collector(config: dict, config_yaml: Path) -> "subprocess.Popen | None
         print(erro[:800] or "  (sem mensagem)")
         return None
     print("[ok] collector no ar, recebendo OTLP em 127.0.0.1:4318")
+    threading.Thread(target=repassar_erros_do_collector, args=(processo.stderr,), daemon=True).start()
     return processo
+
+
+def repassar_erros_do_collector(saida) -> None:
+    """Mostra no console os avisos e erros do collector.
+
+    O rig entrega ao collector local, que responde 200 na hora; se o envio dele
+    para o Dynatrace falhar (token sem logs.ingest, URL errada, sem rede), o
+    coletor Python nao tem como saber. Antes essa saida ficava presa num pipe que
+    ninguem lia: o painel ficava vazio sem nenhum aviso no rig - e, com o pipe
+    cheio, o collector podia travar ao tentar escrever o proximo log.
+    """
+    for linha in iter(saida.readline, b""):
+        texto = linha.decode("utf-8", "replace").rstrip()
+        # Formato do collector: "<data>\t<nivel>\t<origem>\t<mensagem>\t{json}"
+        partes = texto.split("\t")
+        nivel = partes[1].strip().lower() if len(partes) > 1 else ""
+        if nivel in ("warn", "error", "fatal", "panic") or texto.lower().startswith("error"):
+            print(f"\n[collector {nivel or 'erro'}] {' | '.join(partes[3:]) if len(partes) > 3 else texto}"[:600],
+                  file=sys.stderr, flush=True)
 
 
 def subir_gerador(porta: int, captura: Path, variacao: float) -> "threading.Thread | None":

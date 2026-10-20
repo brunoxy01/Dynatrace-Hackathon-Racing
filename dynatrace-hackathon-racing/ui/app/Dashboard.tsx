@@ -319,8 +319,13 @@ export const Dashboard = () => {
     ...frenagemPorPiloto.slice(0,3).map(d => ({referencePoint: d.referencePoint, color: '#f5454b', label: d.driverName.slice(0,2).toUpperCase(), kind: 'piloto' as const})),
     ...aceleracaoPorPiloto.slice(0,3).map(d => ({referencePoint: d.referencePoint, color: '#33dc7d', label: d.driverName.slice(0,2).toUpperCase(), kind: 'piloto' as const})),
   ].filter((m): m is InsightMarker => Boolean(m)), [hotspotFrenagem, hotspotAceleracao, picoVelocidade, frenagemPorPiloto, aceleracaoPorPiloto]);
-  const liveLoading = live.isLoading || liveOtel.isLoading;
-  const liveLapsLoading = liveLaps.isLoading || liveLapsOtel.isLoading;
+  // "Carregando" só na PRIMEIRA busca de cada janela. A recarga em segundo plano
+  // (telemetria a cada 3s, voltas a cada 15s) troca o timeframe absoluto, e para
+  // o useDql isso é uma query nova com isLoading=true: o botão Atualizar girava,
+  // o status virava "Consultando telemetria" e o aviso de "sem eventos" piscava a
+  // cada ciclo. Com um resultado anterior na mão, a tela troca os dados calada.
+  const liveLoading = (live.isLoading || liveOtel.isLoading) && !liveData && !liveOtelData;
+  const liveLapsLoading = (liveLaps.isLoading || liveLapsOtel.isLoading) && !liveLapsData && !liveLapsOtelData;
   // Volta de referência: a mais rápida do período. As amostras dela viram um
   // perfil "em cada ponto da pista, quanto tempo o líder já tinha gasto", que é
   // como as transmissões de F1 montam o delta ao vivo.
