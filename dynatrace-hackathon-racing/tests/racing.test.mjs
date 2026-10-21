@@ -742,3 +742,13 @@ test('completed laps are detected in the live trail, with sectors and spike-free
   assert.equal(voltas[0].last_lap_s3, 24.84);
   assert.equal(voltas[0].top_speed_kmh, 100, 'o pico de 386,2 não vira a máxima');
 });
+
+test('a lap entering the leaderboard takes its sectors from the first frame that has them', () => {
+  const {quadros} = fimDeVolta();
+  const fim = quadros.findIndex(q => q.last_lap_s === 101.94);
+  // Os 3 primeiros quadros com o tempo novo ainda sem setores.
+  for (let k = fim + 3; k < quadros.length; k++) quadros[k] = {...quadros[k], last_lap_s1:25.1, last_lap_s2:52.0, last_lap_s3:24.84};
+  const [volta] = lapCompletions(quadros);
+  assert.equal(volta.timestamp, quadros[fim].timestamp);
+  assert.deepEqual([volta.last_lap_s1, volta.last_lap_s2, volta.last_lap_s3], [25.1, 52.0, 24.84]);
+});

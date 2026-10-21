@@ -119,6 +119,57 @@ class SectorTests(unittest.TestCase):
                 self.assertIsNone(evento["last_lap_s3"])
 
 
+class SectorOrderTests(unittest.TestCase):
+    """Ordens de pacote vistas no jogo na passagem pela linha. Volta de 101,94 s:
+    S1 = 25,10, S2 = 52,00, S3 = 24,84."""
+
+    def _volta(self, linha, tempo_oficial_antes=False):
+        from ams2_protocol import SessionState
+        estado = SessionState()
+
+        def timings(volta, setor, cronometro, no_setor):
+            estado._acompanhar_setores({"lap_number": volta, "sector": setor,
+                                        "lap_time_s": cronometro, "sector_time_s": no_setor})
+
+        def oficial():
+            estado.last_lap_s = 101.94
+            estado._fechar_setores()
+
+        timings(3, 0, 0.05, 0.05)
+        timings(3, 0, 25.0, 25.0)
+        timings(3, 1, 25.15, 0.05)    # S1 = 25,10
+        timings(3, 1, 77.0, 51.9)
+        timings(3, 2, 77.15, 0.05)    # S2 = 52,00
+        timings(3, 2, 101.9, 24.8)
+        if tempo_oficial_antes:
+            oficial()
+        for pacote in linha:
+            timings(*pacote)
+        if not tempo_oficial_antes:
+            oficial()
+        return estado.sectors_of_last_lap()
+
+    def test_lap_and_sector_change_together(self):
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(4, 0, 0.05, 0.05)]))
+
+    def test_sector_flips_one_packet_before_the_lap_number(self):
+        # Antes: o coletor exigia as duas mudancas no mesmo pacote e perdia a volta.
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(3, 0, 0.05, 0.05), (4, 0, 0.1, 0.1)]))
+
+    def test_lap_number_changes_one_packet_before_the_sector(self):
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(4, 2, 101.95, 24.85), (4, 0, 0.05, 0.05)]))
+
+    def test_clock_resets_before_the_sector_flips(self):
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(4, 2, 0.02, 24.9), (4, 0, 0.05, 0.05)]))
+
+    def test_official_time_arriving_before_the_line(self):
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(4, 0, 0.05, 0.05)], tempo_oficial_antes=True))
+
+    def test_out_of_order_sector_jump_drops_the_lap_instead_of_inventing(self):
+        # Reinicio/box no meio da volta: S3 -> S2 -> S3 -> linha. Sem setores.
+        self.assertEqual((None, None, None), self._volta([(3, 1, 10.0, 1.0), (3, 2, 11.0, 0.1), (4, 0, 0.05, 0.05)]))
+
+
 class _Contador(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive
     conexoes = set()

@@ -367,7 +367,13 @@ export function lapCompletions(trail: Telemetry[]): Telemetry[] {
     if (trail[i].last_lap_s !== trail[i - 1].last_lap_s) {
       if (fechaVolta(trail, i)) {
         const v = trail[i];
-        voltas.push({...v, top_speed_kmh: topSpeedOf(trail.slice(inicio, i))});
+        // Se o tempo oficial chegou um instante antes da linha, os primeiros
+        // quadros com ele ainda vêm sem setores: pega do primeiro que tiver.
+        let j = i;
+        while (j < trail.length && trail[j].last_lap_s === v.last_lap_s && !finite(trail[j].last_lap_s1)) j++;
+        const comSetores = j < trail.length && trail[j].last_lap_s === v.last_lap_s ? trail[j] : v;
+        voltas.push({...v, last_lap_s1: comSetores.last_lap_s1, last_lap_s2: comSetores.last_lap_s2, last_lap_s3: comSetores.last_lap_s3,
+          top_speed_kmh: topSpeedOf(trail.slice(inicio, i))});
       }
       inicio = i;
     }
