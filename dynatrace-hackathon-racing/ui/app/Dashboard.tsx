@@ -86,6 +86,10 @@ const QUERY = `fetch bizevents
 // max() dentro deste summarize daria a máxima da volta errada. A volta
 // concluída é `lap_number - 1`; o lookup traz a máxima dela, com o mesmo corte
 // de quadros de teleporte/batida do parseEvents.
+// lap_number é o MAIOR do grupo: se o jogo reinicia a sessão sem o coletor
+// fechar, os primeiros quadros da sessão nova ainda anunciam o último tempo com
+// o contador de voltas zerado, e caem neste mesmo grupo. Com min() a volta
+// passava a ser "a volta 0" e o lookup da velocidade máxima não achava nada.
 // Setores: o coletor já manda S1/S2/S3 da volta em `last_lap_s` nos mesmos
 // quadros, então vêm do próprio agrupamento. max() e não takeAny(): ignora os
 // quadros sem setor (coletor que entrou no meio da volta, ou anteriores à v1.10.5).
@@ -96,7 +100,7 @@ const LAPS = (fonte: string) => `fetch ${fonte}
 | filter isNull(track_name) or track_name == "Interlagos"
 | summarize {
     timestamp = min(timestamp),
-    lap_number = min(lap_number),
+    lap_number = max(lap_number),
     driver_name = takeAny(driver_name),
     car_name = takeAny(car_name),
     last_lap_s1 = max(last_lap_s1),

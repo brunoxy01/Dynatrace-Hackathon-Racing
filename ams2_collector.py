@@ -60,7 +60,7 @@ from ams2_protocol import (
 # Versao exibida no console do rig. O workflow do pacote (pacote-rig.yml)
 # troca esta linha pela tag da release antes de gerar o executavel; o valor
 # aqui vale para quem roda direto do repositorio.
-VERSAO = "v1.10.9"
+VERSAO = "v1.10.10"
 
 EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
