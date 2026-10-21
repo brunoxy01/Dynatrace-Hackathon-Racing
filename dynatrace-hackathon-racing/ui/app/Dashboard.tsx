@@ -13,7 +13,7 @@ import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { createLiveClock, type LiveClock } from './liveClock';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -215,10 +215,10 @@ function useUltimoResultado<T>(atual: T | undefined, chave: string): T | undefin
 // amostras. Antes o painel mostrava a amostra mais nova do Grail: o contador
 // saltava ~2 s a cada recarga e ficava parado entre elas. Só este componente
 // redesenha a cada quadro; o resto do painel, não.
-function TelemetriaAoVivo({liveClock, trail, render}: {liveClock: LiveClock; trail: Telemetry[] | undefined; render: (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined) => React.ReactNode}) {
+function TelemetriaAoVivo({liveClock, trail, render}: {liveClock: LiveClock; trail: Telemetry[] | undefined; render: (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null) => React.ReactNode}) {
   const clock = useSyncExternalStore(liveClock.subscribe, liveClock.get);
-  if (!trail?.length || !clock) return <>{render(undefined, undefined)}</>;
-  return <>{render(sampleAt(trail, clock), lapTimeAt(trail, clock))}</>;
+  if (!trail?.length || !clock) return <>{render(undefined, undefined, null)}</>;
+  return <>{render(sampleAt(trail, clock), lapTimeAt(trail, clock), recentLapResult(trail, clock)?.seconds ?? null)}</>;
 }
 
 function Stat({label, value, unit}: {label: string; value: string; unit?: string}) {
@@ -463,14 +463,16 @@ export const Dashboard = () => {
     {progresso}
   </section>;
 
-  const secaoTelemetria = (subtitulo: string, amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined) =>
-    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading><span className="muted">{subtitulo}</span></div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
+  // O cabeçalho do quadro mostra o tempo OFICIAL da volta recém-concluída,
+  // cravado por até 1 minuto ou até a próxima volta fechar.
+  const secaoTelemetria = (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null = null) =>
+    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
 
   const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
-    <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
+    <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
     {mode === 'live'
-      ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo) => secaoTelemetria(subtitulo, amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo)}/>
-      : secaoTelemetria(subtitulo, focus, focus?.lap_time_s)}
+      ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo, concluida)}/>
+      : secaoTelemetria(focus, focus?.lap_time_s)}
   </div>;
 
   // Por ora, pódio de pilotos em vez de empresas (pedido explícito) - mesma

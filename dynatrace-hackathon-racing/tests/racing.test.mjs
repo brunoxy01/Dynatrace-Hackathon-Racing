@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -696,4 +696,28 @@ test('lap timer advances between samples like a clock', () => {
   assert.equal(lapTimeAt(trilha, t0 + 50).toFixed(3), '10.050');
   assert.equal(lapTimeAt(trilha, t0 + 150).toFixed(3), '10.150');
   assert.equal(lapTimeAt(trilha, t0 + 5000).toFixed(3), '10.200', 'sem amostra recente não inventa tempo');
+});
+
+// Fim de volta: 1:41.940. O último quadro da volta tem o cronômetro em 101,9 s;
+// no quadro seguinte o jogo zera o cronômetro e anuncia o tempo oficial.
+function fimDeVolta() {
+  const t0 = Date.UTC(2026, 9, 20);
+  const quadros = [];
+  for (let i = 0; i <= 20; i++) quadros.push({...sample, lap_time_s:99.9 + i * 0.1, last_lap_s:104.46, timestamp:new Date(t0 + i * 100).toISOString()});
+  for (let i = 0; i < 800; i++) quadros.push({...sample, lap_time_s:0.04 + i * 0.1, last_lap_s:101.94, timestamp:new Date(t0 + 2100 + i * 100).toISOString()});
+  return {t0, quadros};
+}
+test('the official lap time is held in the driver panel right after the line', () => {
+  const {t0, quadros} = fimDeVolta();
+  assert.equal(recentLapResult(quadros, t0 + 1500), null, 'antes da linha, o contador corre');
+  assert.deepEqual(recentLapResult(quadros, t0 + 2100), {seconds:101.94, completedAt:t0 + 2100});
+  assert.equal(recentLapResult(quadros, t0 + 2100 + 59000).seconds, 101.94, 'fica cravado por até 1 minuto');
+  assert.equal(recentLapResult(quadros, t0 + 2100 + 61000), null, 'depois de 1 minuto volta o contador');
+});
+test('a lap time re-announced mid-lap is not shown as just completed', () => {
+  const t0 = Date.UTC(2026, 9, 20);
+  // Coletor reiniciado no meio da volta: primeiro sem last_lap_s, depois o jogo
+  // reanuncia o último tempo com o cronômetro em 47 s.
+  const quadros = [0, 1, 2, 3].map(i => ({...sample, lap_time_s:47 + i * 0.1, last_lap_s:i < 2 ? null : 101.94, timestamp:new Date(t0 + i * 100).toISOString()}));
+  assert.equal(recentLapResult(quadros, t0 + 300), null);
 });

@@ -318,6 +318,28 @@ export function lapTimeAt(trail: Telemetry[], at: number): number | null {
   return decorrido >= 0 && decorrido <= 1000 ? s.lap_time_s + decorrido / 1000 : s.lap_time_s;
 }
 
+// Volta que acabou de ser concluída, no instante `at`: o painel do piloto mostra
+// o tempo OFICIAL dela, parado, por até 1 minuto ou até a próxima volta fechar.
+// A conclusão é o quadro em que last_lap_s muda E o cronômetro do jogo zera
+// (ou o anterior já estava no tempo da volta). Sem essa checagem, um coletor
+// reiniciado no meio da volta "reanuncia" o último tempo e o painel mostraria
+// uma volta antiga como recém-concluída.
+export const LAP_RESULT_HOLD_MS = 60000;
+export function recentLapResult(trail: Telemetry[], at: number, holdMs = LAP_RESULT_HOLD_MS): {seconds: number; completedAt: number} | null {
+  if (!trail.length) return null;
+  let i = trail.indexOf(sampleAt(trail, at));
+  const tempo = trail[i].last_lap_s;
+  if (!finite(tempo) || tempo <= 0) return null;
+  while (i > 0 && trail[i - 1].last_lap_s === tempo) i--;
+  if (i === 0) return null;
+  const virada = trail[i], anterior = trail[i - 1];
+  const zerou = finite(virada.lap_time_s) && virada.lap_time_s <= 3;
+  const fechando = finite(anterior.lap_time_s) && Math.abs(anterior.lap_time_s - tempo) <= 1.5;
+  if (!zerou && !fechando) return null;
+  const completedAt = Date.parse(virada.timestamp);
+  return at - completedAt <= holdMs ? {seconds: tempo, completedAt} : null;
+}
+
 export function advancePlayback(clock: number, oldest: number, newest: number, step: number, trail: number): number {
   if (clock > newest || clock < Math.max(oldest, newest - 2 * trail)) return Math.max(oldest, newest - trail);
   return Math.min(newest, clock + step);
