@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -720,4 +720,25 @@ test('a lap time re-announced mid-lap is not shown as just completed', () => {
   // reanuncia o último tempo com o cronômetro em 47 s.
   const quadros = [0, 1, 2, 3].map(i => ({...sample, lap_time_s:47 + i * 0.1, last_lap_s:i < 2 ? null : 101.94, timestamp:new Date(t0 + i * 100).toISOString()}));
   assert.equal(recentLapResult(quadros, t0 + 300), null);
+});
+
+test('top speed ignores a one- or two-frame spike', () => {
+  const v = speeds => speeds.map(speed_kmh => ({...sample, speed_kmh}));
+  assert.equal(topSpeedOf(v([240, 248.5, 249, 249, 249, 386.2, 150])), 249, 'pico de teleporte ignorado');
+  assert.equal(topSpeedOf(v([240, 249, 249, 249, 395, 391])), 249, 'dois quadros de pico ignorados');
+  assert.equal(topSpeedOf(v([230, 251.9, 251.9, 251.8])), 251.8);
+  assert.equal(topSpeedOf(v([100, 150])), 150, 'menos de três amostras: o máximo');
+  assert.equal(topSpeedOf([]), null);
+});
+test('completed laps are detected in the live trail, with sectors and spike-free top speed', () => {
+  const {quadros} = fimDeVolta();
+  quadros[5] = {...quadros[5], speed_kmh:386.2};
+  const fim = quadros.findIndex(q => q.last_lap_s === 101.94);
+  quadros[fim] = {...quadros[fim], last_lap_s1:25.1, last_lap_s2:52.0, last_lap_s3:24.84};
+  const voltas = lapCompletions(quadros);
+  assert.equal(voltas.length, 1);
+  assert.equal(voltas[0].last_lap_s, 101.94);
+  assert.equal(voltas[0].timestamp, quadros[fim].timestamp, 'mesmo timestamp que a consulta do Grail usa');
+  assert.equal(voltas[0].last_lap_s3, 24.84);
+  assert.equal(voltas[0].top_speed_kmh, 100, 'o pico de 386,2 não vira a máxima');
 });

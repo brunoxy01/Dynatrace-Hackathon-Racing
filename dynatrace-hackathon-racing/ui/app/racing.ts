@@ -325,19 +325,54 @@ export function lapTimeAt(trail: Telemetry[], at: number): number | null {
 // reiniciado no meio da volta "reanuncia" o último tempo e o painel mostraria
 // uma volta antiga como recém-concluída.
 export const LAP_RESULT_HOLD_MS = 60000;
+// O quadro i fecha uma volta? last_lap_s muda ali, e o cronômetro do jogo zera
+// (ou o quadro anterior já estava no tempo da volta).
+function fechaVolta(trail: Telemetry[], i: number): boolean {
+  if (i <= 0) return false;
+  const virada = trail[i], anterior = trail[i - 1], tempo = virada.last_lap_s;
+  if (!finite(tempo) || tempo <= 0 || anterior.last_lap_s === tempo) return false;
+  const zerou = finite(virada.lap_time_s) && virada.lap_time_s <= 3;
+  const fechando = finite(anterior.lap_time_s) && Math.abs(anterior.lap_time_s - tempo) <= 1.5;
+  return zerou || fechando;
+}
 export function recentLapResult(trail: Telemetry[], at: number, holdMs = LAP_RESULT_HOLD_MS): {seconds: number; completedAt: number} | null {
   if (!trail.length) return null;
   let i = trail.indexOf(sampleAt(trail, at));
   const tempo = trail[i].last_lap_s;
   if (!finite(tempo) || tempo <= 0) return null;
   while (i > 0 && trail[i - 1].last_lap_s === tempo) i--;
-  if (i === 0) return null;
-  const virada = trail[i], anterior = trail[i - 1];
-  const zerou = finite(virada.lap_time_s) && virada.lap_time_s <= 3;
-  const fechando = finite(anterior.lap_time_s) && Math.abs(anterior.lap_time_s - tempo) <= 1.5;
-  if (!zerou && !fechando) return null;
-  const completedAt = Date.parse(virada.timestamp);
+  if (!fechaVolta(trail, i)) return null;
+  const completedAt = Date.parse(trail[i].timestamp);
   return at - completedAt <= holdMs ? {seconds: tempo, completedAt} : null;
+}
+
+// Velocidade máxima sem picos: a TERCEIRA maior amostra. Teleporte de reinício
+// ou batida geram um ou dois quadros absurdos (ex.: 386 km/h num Porsche Cup);
+// na reta, a velocidade de verdade se mantém por vários quadros a décimos do
+// máximo, então a terceira maior é a mesma velocidade. Mesmo critério da
+// consulta de voltas no Grail. Com menos de três amostras, fica o máximo.
+export function topSpeedOf(samples: Telemetry[]): number | null {
+  const v = samples.map(s => s.speed_kmh).filter((x): x is number => finite(x) && x >= 0 && x <= MAX_SPEED_KMH).sort((a, b) => b - a);
+  return v.length >= 3 ? v[2] : v.length ? v[0] : null;
+}
+
+// Voltas concluídas dentro de uma trilha, no mesmo formato das linhas da
+// consulta de voltas. Servem para a volta entrar no placar no instante em que a
+// bolinha cruza a linha, sem esperar a próxima consulta ao Grail; quando ela
+// chega, a linha do Grail (mesmo timestamp) prevalece.
+export function lapCompletions(trail: Telemetry[]): Telemetry[] {
+  const voltas: Telemetry[] = [];
+  let inicio = 0;
+  for (let i = 1; i < trail.length; i++) {
+    if (trail[i].last_lap_s !== trail[i - 1].last_lap_s) {
+      if (fechaVolta(trail, i)) {
+        const v = trail[i];
+        voltas.push({...v, top_speed_kmh: topSpeedOf(trail.slice(inicio, i))});
+      }
+      inicio = i;
+    }
+  }
+  return voltas;
 }
 
 export function advancePlayback(clock: number, oldest: number, newest: number, step: number, trail: number): number {

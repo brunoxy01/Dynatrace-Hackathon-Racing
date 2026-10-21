@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { parseTimeAsTimeValue } from '@dynatrace-sdk/units';
 import { useDql } from '@dynatrace-sdk/react-hooks';
 import { Button } from '@dynatrace/strato-components/buttons';
@@ -13,7 +13,7 @@ import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { createLiveClock, type LiveClock } from './liveClock';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -85,7 +85,10 @@ const QUERY = `fetch bizevents
 // volta SEGUINTE (na captura, a volta 2 carrega o tempo da volta 1), então o
 // max() dentro deste summarize daria a máxima da volta errada. A volta
 // concluída é `lap_number - 1`; o lookup traz a máxima dela, com o mesmo corte
-// de quadros de teleporte/batida do parseEvents.
+// de quadros de teleporte/batida do parseEvents. A máxima é a TERCEIRA maior
+// amostra da volta, para ignorar picos de um ou dois quadros (teleporte de
+// reinício, batida); percentile() do Grail também os ignora, mas é aproximado
+// (deu 250,6 numa volta de 249,0). Mesmo critério do topSpeedOf no app.
 // lap_number é o MAIOR do grupo: se o jogo reinicia a sessão sem o coletor
 // fechar, os primeiros quadros da sessão nova ainda anunciam o último tempo com
 // o contador de voltas zerado, e caem neste mesmo grupo. Com min() a volta
@@ -113,7 +116,8 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     | filter event.type == "racing.telemetry"
     | filter isNull(track_name) or track_name == "Interlagos"
     | filter isNotNull(lap_number) and speed_kmh >= 0 and speed_kmh <= ${MAX_SPEED_KMH}
-    | summarize top_speed_kmh = max(speed_kmh), by: {\`rig.id\`, \`session.id\`, lap_number}
+    | summarize {maximo = max(speed_kmh), velocidades = collectArray(speed_kmh, maxLength: 100000)}, by: {\`rig.id\`, \`session.id\`, lap_number}
+    | fieldsAdd top_speed_kmh = coalesce(arraySort(velocidades, direction: "descending")[2], maximo)
     | fieldsAdd lap_key = concat(\`rig.id\`, "|", \`session.id\`, "|", toString(toLong(lap_number)))
   ], sourceField: lap_key, lookupField: lap_key, fields: {top_speed_kmh}
 | fieldsRemove lap_key
@@ -169,7 +173,7 @@ const LAPS_REFRESH_MS = 15000;
 // Ranking do período: uma linha por VOLTA, da mais rápida para a mais lenta.
 // Por piloto, o período inteiro virava uma linha por pessoa — com um piloto só
 // na pista, uma linha no total.
-type Ranked = Telemetry & {position: number};
+type Ranked = Telemetry & {position: number; gap_s: number | null};
 // Classificação: a primeira página é o "top 20"; com mais voltas no período, a
 // tabela pagina. autoResetPageIndex desligado porque no Ao vivo as voltas
 // recarregam a cada 15s e a tabela voltava para a página 1 no meio da leitura;
@@ -190,6 +194,9 @@ const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
+  // Quanto a volta ficou atrás da mais rápida do período. A primeira mostra "—".
+  { id: 'gap', header: 'Diferença', accessor: 'gap_s', minWidth: 110, sortType: 'number', sortAccessor: row => row.gap_s ?? Infinity,
+    cell: ({rowData}) => <>{rowData.gap_s === null || rowData.position === 1 ? '—' : `+${sectorTime(rowData.gap_s)}`}</> },
   ...SECTOR_COLUMNS,
   TOP_SPEED_COLUMN,
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
@@ -219,6 +226,26 @@ function TelemetriaAoVivo({liveClock, trail, render}: {liveClock: LiveClock; tra
   const clock = useSyncExternalStore(liveClock.subscribe, liveClock.get);
   if (!trail?.length || !clock) return <>{render(undefined, undefined, null)}</>;
   return <>{render(sampleAt(trail, clock), lapTimeAt(trail, clock), recentLapResult(trail, clock)?.seconds ?? null)}</>;
+}
+
+// Avisa quando o relógio do Ao vivo passa por uma volta concluída (de qualquer
+// piloto): a volta entra no placar na hora, e a consulta das voltas é refeita.
+// Voltas que já tinham passado quando o Ao vivo abriu não disparam nada.
+function DetectorDeVoltas({liveClock, voltas, onVolta}: {liveClock: LiveClock; voltas: Telemetry[]; onVolta: (volta: Telemetry) => void}) {
+  const clock = useSyncExternalStore(liveClock.subscribe, liveClock.get);
+  const inicio = useRef(0);
+  const avisadas = useRef(new Set<string>());
+  useEffect(() => {
+    if (!clock) return;
+    if (!inicio.current) inicio.current = clock;
+    for (const volta of voltas) {
+      const at = Date.parse(volta.timestamp), chave = `${driverKey(volta)}|${volta.last_lap_s}`;
+      if (at <= inicio.current || at > clock || avisadas.current.has(chave)) continue;
+      avisadas.current.add(chave);
+      onVolta(volta);
+    }
+  }, [clock, voltas, onVolta]);
+  return null;
 }
 
 function Stat({label, value, unit}: {label: string; value: string; unit?: string}) {
@@ -316,9 +343,20 @@ export const Dashboard = () => {
   const liveLapsData = useUltimoResultado(liveLaps.data, janela);
   const liveLapsOtelData = useUltimoResultado(liveLapsOtel.data, janela);
   const events = useMemo(() => mode === 'stream' ? backfillIdentity(stream.events) : mode === 'replay' ? lapSamples.slice(0, cursor) : backfillIdentity(mergeTelemetry(parseEvents(liveData?.records), parseEvents(liveOtelData?.records))), [mode, cursor, lapSamples, liveData, liveOtelData, stream.events]);
+  // Voltas que acabaram de fechar no Ao vivo, antes de a consulta ao Grail
+  // devolvê-las. O Grail vem primeiro no merge: quando a mesma volta chega de
+  // lá (mesmo timestamp), a linha local é descartada.
+  const [voltasLocais, setVoltasLocais] = useState<{janela: string; voltas: Telemetry[]}>({janela: '', voltas: []});
+  const locais = useMemo(() => voltasLocais.janela === janela ? voltasLocais.voltas : [], [voltasLocais, janela]);
   const lapResults = useMemo(() => mode === 'stream'
     ? []
-    : dedupeLaps(mergeTelemetry(parseEvents(liveLapsData?.records), parseEvents(liveLapsOtelData?.records))), [mode, liveLapsData, liveLapsOtelData]);
+    : dedupeLaps(mergeTelemetry(parseEvents(liveLapsData?.records), parseEvents(liveLapsOtelData?.records), locais)), [mode, liveLapsData, liveLapsOtelData, locais]);
+  const voltasAoVivo = useMemo(() => mode === 'live' ? trails(events).flatMap(lapCompletions) : [], [mode, events]);
+  const aoConcluirVolta = useCallback((volta: Telemetry) => {
+    if (timeframe.to !== 'now()') return;
+    setVoltasLocais(atual => ({janela, voltas: [...(atual.janela === janela ? atual.voltas : []), volta]}));
+    setLapsTime(Date.now());
+  }, [janela, timeframe.to]);
   // No replay, o seletor de piloto lista quem correu no PERÍODO — isso vem das
   // voltas, não da telemetria já reproduzida, que é de um piloto só.
   const lapDrivers = useMemo(() => {
@@ -343,9 +381,12 @@ export const Dashboard = () => {
     .filter(l => selected === 'all' || driverKey(l) === selected)
     .filter(l => filtroRig === 'all' || l['rig.id'] === filtroRig)
     .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroRig]);
-  const ranking = useMemo<Ranked[]>(() => lapsByTime(lapResults).map((l,i) => ({...l, position: i+1})), [lapResults]);
+  const ranking = useMemo<Ranked[]>(() => {
+    const ordem = lapsByTime(lapResults), melhor = ordem[0]?.last_lap_s ?? null;
+    return ordem.map((l,i) => ({...l, position: i+1, gap_s: melhor !== null && finite(l.last_lap_s) ? l.last_lap_s - melhor : null}));
+  }, [lapResults]);
   const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
-  const peak = Math.max(0, ...events.map(e => finite(e.speed_kmh) ? e.speed_kmh : 0));
+  const peak = topSpeedOf(events) ?? 0;
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
   // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
@@ -459,6 +500,7 @@ export const Dashboard = () => {
     <div className="panel-heading"><div><span className="eyebrow">AUTÓDROMO JOSÉ CARLOS PACE</span><Heading level={2}>Interlagos <span className="track-country">BR</span></Heading></div><span className="track-distance">4,295 <small>km</small></span></div>
     <div className="metric-tabs mixed-legend" aria-label="Legenda do mapa combinado"><span><i className="legend-dot speed_kmh"/>Velocidade</span><span><i className="legend-dot brake_pct"/>Frenagem</span><span><i className="legend-dot acceleration_g"/>Aceleração</span></div>
     <TrackMap events={filtered} carName={focus?.car_name} liveClock={mode === 'live' ? liveClock : undefined} />
+    {mode === 'live' && <DetectorDeVoltas liveClock={liveClock} voltas={voltasAoVivo} onVolta={aoConcluirVolta}/>}
     <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
     {progresso}
   </section>;
@@ -466,7 +508,7 @@ export const Dashboard = () => {
   // O cabeçalho do quadro mostra o tempo OFICIAL da volta recém-concluída,
   // cravado por até 1 minuto ou até a próxima volta fechar.
   const secaoTelemetria = (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null = null) =>
-    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
+    <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{ranking.filter(l => (l.last_lap_s ?? Infinity) < voltaConcluida).length + 1}º · {lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
 
   const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
     <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
