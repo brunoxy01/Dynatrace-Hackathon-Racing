@@ -1,7 +1,8 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useSyncExternalStore } from 'react';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
-import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, positionAt, advancePlayback, PLAYBACK_TRAIL_MS, driverKey } from './racing';
+import type { LiveClock } from './liveClock';
+import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, positionAt, PLAYBACK_TRAIL_MS, driverKey } from './racing';
 
 // Fixed world-to-map transform shared by the reference and live samples.
 const project = (x: number, y: number) => ({x: 54 + (y + 486) * .53, y: 40 + (x + 480) * .53});
@@ -23,41 +24,24 @@ export function referencePointCoords(referencePoint: number): {x: number; y: num
   return index === undefined ? null : points[index];
 }
 
-const PLAYBACK_STEP_MS = 50;
-
-// Caminha pelo bloco de amostras em tempo real; a regra de cada passo (e a
-// ressincronização) está em advancePlayback, que é testada à parte.
-function usePlaybackClock(oldest: number, newest: number, animate: boolean): number {
-  const [at, setAt] = useState(newest);
-  const clock = useRef(newest);
-  useEffect(() => {
-    if (!animate) return;
-    const tick = () => {
-      const next = advancePlayback(clock.current, oldest, newest, PLAYBACK_STEP_MS, PLAYBACK_TRAIL_MS);
-      if (next === clock.current) return;
-      clock.current = next;
-      setAt(next);
-    };
-    tick();
-    const timer = window.setInterval(tick, PLAYBACK_STEP_MS);
-    return () => window.clearInterval(timer);
-  }, [animate, oldest, newest]);
-  return at;
-}
+// Sem relógio (replay, script local) os marcadores ficam na amostra mais nova.
+const semAssinatura = () => () => {};
+const relogioParado = () => 0;
 
 // Os marcadores vivem à parte do TrackMap de propósito: o relógio muda de estado
 // 20 vezes por segundo, e o mapa de calor tem ~156 gradientes que não devem ser
 // redesenhados nesse ritmo.
-function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) {
+function CarMarkers({events, liveClock}: {events: Telemetry[]; liveClock?: LiveClock}) {
   const paths = useMemo(() => trails(events), [events]);
   const [oldest, newest] = useMemo(() => paths.length
     ? [Math.min(...paths.map(t => Date.parse(t[0].timestamp))), Math.max(...paths.map(t => Date.parse(t[t.length-1].timestamp)))]
     : [0, 0], [paths]);
-  const clock = usePlaybackClock(oldest, newest, animate);
+  useEffect(() => { liveClock?.setRange(oldest, newest); }, [liveClock, oldest, newest]);
+  const clock = useSyncExternalStore(liveClock?.subscribe ?? semAssinatura, liveClock?.get ?? relogioParado);
   // Só o Grail entrega em blocos. O script local e o replay da captura já chegam
   // amostra a amostra (e o replay corre a 4×), então ali a posição mais recente
   // já é contínua e um relógio de 1× só atrasaria o carro.
-  const at = animate ? clock : newest;
+  const at = liveClock && clock ? clock : newest;
   if (!paths.length) return null;
   return <>{paths.map(trail => {
     const car = sampleAt(trail, at);
@@ -68,7 +52,7 @@ function CarMarkers({events, animate}: {events: Telemetry[]; animate: boolean}) 
     // primeiros ~27s da sessão, antes do pacote de identidade chegar), o
     // marcador fica só com a bolinha branca, sem texto.
     const iniciais = car.driver_name?.slice(0,2).toUpperCase();
-    return <g key={driverKey(car)} className="car-marker" transform={`translate(${point.x},${point.y})`}>
+    return <g key={driverKey(car)} className={liveClock ? 'car-marker live' : 'car-marker'} transform={`translate(${point.x},${point.y})`}>
       <circle className="marker-halo" r="12" fill="#1496ff" opacity=".18"/>
       <circle r={iniciais ? 10 : 5.5} fill="#fff" stroke="#172936" strokeWidth="2"/>
       {iniciais && <text textAnchor="middle" dominantBaseline="central" fontSize="8.5" fontWeight="700" fill="#172936">{iniciais}</text>}
@@ -148,17 +132,17 @@ export function InsightsMap({events, markers}: {events: Telemetry[]; markers: In
   </svg>;
 }
 
-export function TrackMap({events, carName, animate = false}: {events: Telemetry[]; carName?: string | null; animate?: boolean}) {
+export function TrackMap({events, carName, liveClock}: {events: Telemetry[]; carName?: string | null; liveClock?: LiveClock}) {
   const id = useId().replace(/:/g,'');
-  // No Ao vivo a bolinha anda PLAYBACK_TRAIL_MS atrás da amostra mais nova. Se o
-  // calor usasse tudo, a pista aparecia pintada à frente do carro, como se ele
-  // já tivesse passado ali. O calor vai até o ponto onde o relógio começa a cada
-  // recarga; entre recargas o carro anda à frente da tinta, nunca atrás.
+  // No Ao vivo a bolinha anda atrás da amostra mais nova. Se o calor usasse
+  // tudo, a pista aparecia pintada à frente do carro, como se ele já tivesse
+  // passado ali. O calor vai até o instante do relógio a cada recarga; entre
+  // recargas o carro anda à frente da tinta, nunca atrás.
   const heatEvents = useMemo(() => {
-    if (!animate || !events.length) return events;
-    const corte = Math.max(...events.map(e => Date.parse(e.timestamp))) - PLAYBACK_TRAIL_MS;
+    if (!liveClock || !events.length) return events;
+    const corte = liveClock.get() || Math.max(...events.map(e => Date.parse(e.timestamp))) - PLAYBACK_TRAIL_MS;
     return events.filter(e => Date.parse(e.timestamp) <= corte);
-  }, [events, animate]);
+  }, [events, liveClock]);
   const colors = useMemo(() => {
     const speed = trackHeat(heatEvents, 'speed_kmh', nodes), brake = trackHeat(heatEvents, 'brake_pct', nodes), acceleration = trackHeat(heatEvents, 'acceleration_g', nodes);
     return speed.map((v,i) => mixedHeatColor(v,brake[i],acceleration[i]));
@@ -176,6 +160,6 @@ export function TrackMap({events, carName, animate = false}: {events: Telemetry[
       <image href="./assets/porsche-911.png" x="4" y="346" width="146" height="82" preserveAspectRatio="xMidYMid meet"/>
       <text x="77" y="434" textAnchor="middle" fill="currentColor" fontSize="10" fontWeight="600">{carName ?? 'Carro não informado'}</text>
     </g>
-    <CarMarkers events={events} animate={animate}/>
+    <CarMarkers events={events} liveClock={liveClock}/>
   </svg>;
 }

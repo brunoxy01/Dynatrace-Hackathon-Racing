@@ -281,6 +281,43 @@ export const TELEMETRY_REFRESH_MS = 2000;
 // usar os valores de verdade.
 export const PLAYBACK_TRAIL_MS = 5000;
 
+// ---------- Relógio do Ao vivo ----------
+// O relógio anda em tempo real e precisa ficar SEMPRE atrás da amostra mais
+// nova, senão alcança o fim dos dados e o carro (e o contador de tempo) para até
+// a próxima consulta. Um atraso fixo não serve: a ingestão do Grail oscila, e
+// 5 s às vezes não bastava. O atraso alvo sai do que foi medido nas últimas
+// chegadas de dados: o maior atraso de ingestão visto mais o maior intervalo
+// entre dois blocos novos, mais uma folga. Tudo relativo ao relógio do
+// navegador, então uma diferença de horário entre o rig e o navegador se anula.
+const LIVE_MARGIN_MS = 500;
+export function liveDelay(lags: number[], gaps: number[]): number {
+  const atraso = lags.length ? Math.max(...lags) : 0;
+  const intervalo = Math.max(TELEMETRY_REFRESH_MS, ...gaps);
+  return atraso + intervalo + LIVE_MARGIN_MS;
+}
+
+// Um passo do relógio do Ao vivo. Anda `elapsed` ms de tempo real, com o ritmo
+// ajustado em no máximo ±8% para convergir ao alvo (agora − atraso): ajuste
+// imperceptível, em vez de travar ou pular. Só salta direto para o alvo quando
+// está longe demais (primeira carga, aba em segundo plano, troca de filtro).
+export function stepLiveClock(clock: number, now: number, elapsed: number, oldest: number, newest: number, delay: number): number {
+  if (!newest) return clock;
+  const alvo = Math.min(newest, Math.max(oldest, now - delay));
+  if (!clock || clock > newest || clock < oldest || Math.abs(alvo - clock) > 10000) return alvo;
+  const ritmo = 1 + Math.max(-0.08, Math.min(0.08, (alvo - clock) / 5000));
+  return Math.min(newest, Math.max(oldest, clock + elapsed * ritmo));
+}
+
+// Tempo de volta no instante `at`: o da amostra anterior mais o que passou
+// desde ela. Entre duas amostras (100 ms a 10 Hz) o contador anda como relógio
+// em vez de saltar. Sem amostra recente (mais de 1 s), não inventa tempo.
+export function lapTimeAt(trail: Telemetry[], at: number): number | null {
+  const s = sampleAt(trail, at);
+  if (!finite(s.lap_time_s)) return null;
+  const decorrido = at - Date.parse(s.timestamp);
+  return decorrido >= 0 && decorrido <= 1000 ? s.lap_time_s + decorrido / 1000 : s.lap_time_s;
+}
+
 export function advancePlayback(clock: number, oldest: number, newest: number, step: number, trail: number): number {
   if (clock > newest || clock < Math.max(oldest, newest - 2 * trail)) return Math.max(oldest, newest - trail);
   return Math.min(newest, clock + step);

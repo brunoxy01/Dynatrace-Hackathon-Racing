@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -641,4 +641,59 @@ test('live marker glides between 10 Hz samples instead of jumping', () => {
   // Buraco de 1,3 s: não interpola, o carro fica na última posição conhecida.
   assert.deepEqual(positionAt(trilha, t0 + 800), {x:20, y:0});
   assert.deepEqual(positionAt(trilha, t0 + 9000), {x:30, y:0});
+});
+
+// Regime real do Ao vivo, quadro a quadro (60 fps): recarga a cada 2 s com
+// latência de consulta variável, e a amostra mais nova chegando com atraso de
+// ingestão oscilando entre 1 e 3,5 s, com um pico de 5 s no meio. O relógio
+// mede as chegadas como o liveClock.ts faz e deve rodar como relógio: sem
+// travar no fim dos dados, sem pular, com ritmo sempre perto de 1×.
+test('live clock runs like a clock through uneven Grail ingestion', () => {
+  const atrasos = [1000, 3500, 1200, 2800, 1000, 3500, 2000, 5000, 1500, 3000, 1100, 3400];
+  const latencias = [300, 900, 400, 1200, 350, 800];
+  const lags = [], gaps = [];
+  let agora = 1_000_000, clock = 0, newest = 0, ultimaChegada = 0, proximaConsulta = agora, consulta = 0;
+  let travadas = 0, pulos = 0, menorRitmo = Infinity, maiorRitmo = 0;
+  for (let quadro = 0; quadro < 60 * 120; quadro++) {          // 2 minutos
+    if (agora >= proximaConsulta) {
+      const chegaEm = agora + latencias[consulta % latencias.length];
+      const novoNewest = chegaEm - atrasos[consulta % atrasos.length];
+      proximaConsulta += 2000; consulta++;
+      // a resposta é aplicada quando chega
+      pendente.push({chegaEm, novoNewest});
+    }
+    while (pendente.length && pendente[0].chegaEm <= agora) {
+      const {novoNewest} = pendente.shift();
+      if (novoNewest > newest) {
+        lags.push(agora - novoNewest); if (lags.length > 15) lags.shift();
+        if (ultimaChegada) { gaps.push(agora - ultimaChegada); if (gaps.length > 15) gaps.shift(); }
+        ultimaChegada = agora; newest = novoNewest;
+      }
+    }
+    const antes = clock;
+    clock = stepLiveClock(clock, agora, 16, 0, newest, liveDelay(lags, gaps));
+    if (agora > 1_020_000 && antes) {                            // depois de 20 s de aquecimento
+      const ritmo = (clock - antes) / 16;
+      if (clock === antes) travadas++;
+      if (ritmo > 1.2) pulos++;
+      menorRitmo = Math.min(menorRitmo, ritmo); maiorRitmo = Math.max(maiorRitmo, ritmo);
+    }
+    agora += 16;
+  }
+  assert.equal(travadas, 0, 'o relógio não deve encostar no fim dos dados');
+  assert.equal(pulos, 0, 'o relógio não deve pular');
+  assert.ok(menorRitmo >= 0.92 - 1e-9 && maiorRitmo <= 1.08 + 1e-9, `ritmo fora de ±8%: ${menorRitmo.toFixed(3)}–${maiorRitmo.toFixed(3)}`);
+});
+const pendente = [];
+test('live clock resyncs straight to the target when far away', () => {
+  assert.equal(stepLiveClock(0, 100000, 16, 50000, 99000, 5000), 95000);       // primeira carga
+  assert.equal(stepLiveClock(60000, 100000, 16, 50000, 99000, 5000), 95000);   // aba em segundo plano
+  assert.equal(stepLiveClock(120000, 100000, 16, 50000, 99000, 5000), 95000);  // relógio além dos dados
+});
+test('lap timer advances between samples like a clock', () => {
+  const t0 = Date.UTC(2026, 9, 20);
+  const trilha = [0, 100, 200].map((ms, i) => ({...sample, lap_time_s:10 + i * 0.1, timestamp:new Date(t0 + ms).toISOString()}));
+  assert.equal(lapTimeAt(trilha, t0 + 50).toFixed(3), '10.050');
+  assert.equal(lapTimeAt(trilha, t0 + 150).toFixed(3), '10.150');
+  assert.equal(lapTimeAt(trilha, t0 + 5000).toFixed(3), '10.200', 'sem amostra recente não inventa tempo');
 });

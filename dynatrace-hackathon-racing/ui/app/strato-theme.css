@@ -46,6 +46,9 @@
    pular em vez de deslizar. Esta regra ganha de racing.css por vir depois no
    import (mesma especificidade), então é aqui que o valor efetivo mora. */
 .car-marker {transition:transform 48ms linear;}
+/* No Ao vivo a posição já é interpolada e redesenhada a cada quadro; uma
+   transição por cima só atrasaria e reiniciaria a cada quadro. */
+.car-marker.live {transition:none;}
 @media(max-width:1080px){.racing-app{padding:var(--dt-spacings-size-24)}.hero-grid{gap:var(--dt-spacings-size-16)}}
 @media(max-width:780px){.racing-app,.leaderboard{padding:var(--dt-spacings-size-16)}.identity h1{font-size:var(--dt-typography-heading-level-3-size)!important}}
 @media(prefers-reduced-motion:reduce){.metric-legend,.car-marker{transition:none}}
