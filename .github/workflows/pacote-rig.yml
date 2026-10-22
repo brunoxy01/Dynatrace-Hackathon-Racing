@@ -31,6 +31,16 @@ jobs:
       - name: Testes
         run: python -m unittest test_collector test_cars2_telemetry test_protocol test_replay
 
+      # Versao no console do rig: a tag da release (ex.: v1.10.8) entra no
+      # codigo antes do build. Sem tag (workflow_dispatch), fica o valor do repo.
+      - name: Gravar a versao no coletor
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          (Get-Content ams2_collector.py) -replace '^VERSAO = .*$', "VERSAO = `"$tag`"" | Set-Content ams2_collector.py -Encoding UTF8
+          Select-String -Path ams2_collector.py -Pattern '^VERSAO = '
+
       - name: Construir o executavel
         run: >
           pyinstaller --onefile --name HackathonRacing
@@ -56,6 +66,11 @@ jobs:
 
       - name: Montar o pacote
         shell: pwsh
+        env:
+          # Secret do repositorio (Settings > Secrets > Actions). Nunca vai
+          # para o texto do workflow nem para os logs - so' para dentro do
+          # racing.ini do pacote, que e' anexado na release publica.
+          DT_API_TOKEN_EVENTO: ${{ secrets.DT_API_TOKEN_EVENTO }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path pacote/motor | Out-Null
@@ -74,15 +89,19 @@ jobs:
           # Quem esta na cadeira. Preenchido aqui, vence o nome do perfil do
           # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
           driver_name =
-          company_name =
           ams2_port = 5606
-          sink = both
+          # bizevents (padrao), otlp ou both. "both" dobra o volume ingerido.
+          # O caminho OTLP depende de o token ter logs.ingest; no tenant do
+          # evento so' o bizevents foi confirmado entregando.
+          sink = bizevents
           # Quanto o rig segura as amostras antes de enviar. Menor =
           # mapa mais perto do tempo real, mais requisicoes por segundo.
           batch_size = 10
-          flush_interval = 1.0
-          dt_env_url = https://SEU_AMBIENTE.live.dynatrace.com
-          dt_api_token = COLE_O_TOKEN_AQUI
+          flush_interval = 0.5
+          # Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas.
+          sample_hz = 10
+          dt_env_url = https://bwm98081.live.dynatrace.com
+          dt_api_token = $env:DT_API_TOKEN_EVENTO
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini
           Compress-Archive -Path pacote/* -DestinationPath HackathonRacing-rig-windows.zip -Force
 

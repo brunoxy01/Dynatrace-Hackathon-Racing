@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Ensaio dos 3 simuladores numa maquina so' (macOS/Linux).
 #
-# Sobe um OTel Collector e tres pares gerador+coletor, cada um com rig, piloto,
-# empresa e ritmo diferentes. E' a mesma cadeia do dia do evento: a unica coisa
+# Sobe um OTel Collector e tres pares gerador+coletor, cada um com rig, piloto
+# e ritmo diferentes. E' a mesma cadeia do dia do evento: a unica coisa
 # trocada e' quem produz os pacotes UDP (o gerador no lugar do AMS2).
 #
 #   cp .env.exemplo .env.local   # preencha DT_ENV_URL e DT_API_TOKEN
@@ -21,11 +21,11 @@ LOCAL=0
 TMP="$(mktemp -d)"
 COLETOR_BIN="${COLETOR_BIN:-./dynatrace-otel-collector}"
 
-# ---- pilotos do ensaio: nome, empresa, porta UDP, variacao de ritmo ----
+# ---- pilotos do ensaio: nome, porta UDP, variacao de ritmo ----
 RIGS=(
-  "rig-01|Bruno Lima|Dynatrace|15606|0"
-  "rig-02|Joao Pereira|Bradesco|15607|-6"
-  "rig-03|Agnes Souza|Caixa|15608|7"
+  "rig-01|Bruno Lima|15606|0"
+  "rig-02|Joao Pereira|15607|-6"
+  "rig-03|Agnes Souza|15608|7"
 )
 
 encerrar() {
@@ -80,17 +80,17 @@ echo "[ok] collector recebendo OTLP em 127.0.0.1:4318"
 
 # ---- 2. um coletor Python e um gerador por rig ----
 for entrada in "${RIGS[@]}"; do
-  IFS='|' read -r rig piloto empresa porta variacao <<< "$entrada"
+  IFS='|' read -r rig piloto porta variacao <<< "$entrada"
   "$PY" ams2_collector.py --source udp --bind 127.0.0.1 --port "$porta" \
     --rig-id "$rig" --rig-name "Simulador ${rig#rig-}" \
-    --driver-name "$piloto" --company-name "$empresa" \
+    --driver-name "$piloto" \
     --sink "$SINK" --batch-size 40 --flush-interval 2 \
     ${EXTRA[@]+"${EXTRA[@]}"} > "$TMP/$rig.log" 2>&1 &
   sleep 0.5
   "$PY" cars2_telemetry_generator.py --host 127.0.0.1 --port "$porta" \
     --loop --speed 3 --speed-pct "$variacao" --brake-pct "$variacao" \
     > "$TMP/$rig-gerador.log" 2>&1 &
-  echo "[ok] $rig  $piloto / $empresa  (porta $porta, ritmo ${variacao}%)"
+  echo "[ok] $rig  $piloto  (porta $porta, ritmo ${variacao}%)"
 done
 
 echo ""
@@ -101,10 +101,10 @@ if [ "$LOCAL" = "0" ]; then
   echo ""
   echo " Confira no Dynatrace (leva ~30s para aparecer):"
   echo "   fetch bizevents | filter event.type == \"racing.telemetry\""
-  echo "   | summarize count(), by:{rig.id, driver_name, company_name}"
+  echo "   | summarize count(), by:{rig.id, driver_name}"
   echo ""
   echo "   fetch logs | filter event.type == \"racing.telemetry\""
-  echo "   | summarize count(), by:{rig.id, driver_name, company_name}"
+  echo "   | summarize count(), by:{rig.id, driver_name}"
 fi
 echo "======================================================="
 

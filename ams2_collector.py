@@ -39,16 +39,15 @@ Uso:
 from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
 
 import argparse
+import http.client
 import json
-import re
 import os
 import queue
 import socket
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -58,10 +57,19 @@ from ams2_protocol import (
     decode_telemetry,
 )
 
+# Versao exibida no console do rig. O workflow do pacote (pacote-rig.yml)
+# troca esta linha pela tag da release antes de gerar o executavel; o valor
+# aqui vale para quem roda direto do repositorio.
+VERSAO = "v1.10.14"
+
 EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
 DEFAULT_UDP_PORT = 5606
 DEFAULT_OTLP_ENDPOINT = "http://127.0.0.1:4318/v1/logs"
+# O AMS2 manda ~20 quadros/s com UDP Frequency = 1. O mapa e os indicadores nao
+# ganham nada visivel com isso, e metade do volume e' metade do que ingerir e
+# consultar. 0 desliga o corte e envia todo quadro.
+DEFAULT_SAMPLE_HZ = 10.0
 OTLP_SERVICE_NAME = "ams2-rig"
 
 
@@ -69,33 +77,11 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# O piloto digita o proprio nome no perfil do AMS2. Combinando "Nome [Empresa]",
-# o rig nao precisa ser reconfigurado a cada cliente que senta na cadeira.
-# Aceita "[Nome][Empresa]", "Nome [Empresa]" e "Nome" (sem empresa).
-NOME_EMPRESA = re.compile(r"^\s*\[?\s*([^\[\]]+?)\s*\]?\s*\[\s*([^\[\]]+?)\s*\]\s*$")
-
-
-def split_driver_company(bruto: Optional[str]):
-    """Separa nome do piloto e empresa. Devolve (nome, empresa|None).
-
-    Feito aqui e nao no OpenPipeline de proposito: vale igual nos dois caminhos
-    de ingestao (business events e logs OTLP), nao depende de configuracao no
-    tenant e da' para testar. O texto original segue em driver_name_raw, entao
-    uma regra de OpenPipeline ainda pode reprocessar depois se preferirem.
-    """
-    if not bruto or not bruto.strip():
-        return None, None
-    casado = NOME_EMPRESA.match(bruto)
-    if casado:
-        return casado.group(1).strip(), casado.group(2).strip()
-    return bruto.strip().strip("[]").strip() or None, None
-
-
 def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState,
                  telemetry: dict, timings: Optional[dict], source: str,
-                 sample_seq: int = 0, driver_name: Optional[str] = None,
-                 company_name: Optional[str] = None) -> dict:
-    nome_do_jogo, empresa_do_jogo = split_driver_company(state.driver_name)
+                 sample_seq: int = 0, driver_name: Optional[str] = None) -> dict:
+    nome_do_jogo = (state.driver_name or "").strip() or None
+    s1, s2, s3 = state.sectors_of_last_lap()
     return {
         "timestamp": iso_now(),
         # Identidade unica da amostra. Quando bizevents e OTLP rodam juntos o mesmo
@@ -107,14 +93,10 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "session.id": session_id,
         "rig.id": rig_id,
         "rig.name": rig_name,
-        # O piloto e a empresa saem de "Nome [Empresa]" digitado no perfil do AMS2.
-        # As opcoes --driver-name / --company-name vencem, para quando o rig ja'
-        # sabe quem esta na cadeira.
+        # O piloto digita o proprio nome no perfil do AMS2 (conta Steam). A
+        # opcao --driver-name vence, para quando o rig ja' sabe quem esta na
+        # cadeira.
         "driver_name": driver_name or nome_do_jogo,
-        # O app monta o podio "Disputa entre empresas" por este campo. O protocolo
-        # do AMS2 nao tem nada equivalente: ou vem no nome, ou e' informado aqui.
-        "company_name": company_name or empresa_do_jogo,
-        "driver_name_raw": state.driver_name,
         "car_name": state.car_name,
         "acceleration_g": telemetry["acceleration_g"],
         "speed_kmh": telemetry["speed_kmh"],
@@ -126,14 +108,68 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "lap_race_position": timings["lap_race_position"] if timings else None,
         "best_lap_s": state.best_lap_s,
         "last_lap_s": state.last_lap_s,
+        # Setores da volta em last_lap_s; nulos se o coletor entrou no meio dela.
+        "last_lap_s1": s1,
+        "last_lap_s2": s2,
+        "last_lap_s3": s3,
         "lap_invalidated": timings["lap_invalidated"] if timings else None,
         "track_name": state.track_location,
         "lap_number": timings["lap_number"] if timings else None,
     }
 
 
-def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.0,
-               tentativas: int = 3) -> bool:
+class ConexaoHttp:
+    """Conexao HTTP(S) reaproveitada entre os POSTs.
+
+    O urllib abre um TCP + TLS novo a cada requisicao. Do Brasil ate o tenant
+    isso sao varias idas e voltas por lote, e com 2 lotes/s a thread de envio
+    nao dava conta: a fila crescia e o atraso subia minuto a minuto. Com
+    keep-alive o handshake acontece uma vez e cada lote custa um POST so'.
+
+    Nao e' thread-safe: cada thread de envio tem a sua.
+    """
+
+    def __init__(self, url: str, timeout: float = 10.0):
+        partes = urllib.parse.urlsplit(url)
+        self.https = partes.scheme == "https"
+        self.host = partes.hostname or "127.0.0.1"
+        self.port = partes.port
+        self.caminho = (partes.path or "/") + (f"?{partes.query}" if partes.query else "")
+        self.timeout = timeout
+        self._conn: Optional[http.client.HTTPConnection] = None
+
+    def _abrir(self) -> http.client.HTTPConnection:
+        classe = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
+        return classe(self.host, self.port, timeout=self.timeout)
+
+    def fechar(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def post(self, body: bytes, headers: dict):
+        """Devolve (status, corpo). Uma conexao ociosa que o servidor ja' fechou
+        so' e' descoberta no envio; nesse caso reabre e tenta de novo na hora,
+        sem gastar uma das tentativas com espera."""
+        for reaproveitada in ((self._conn is not None), False):
+            if self._conn is None:
+                self._conn = self._abrir()
+            try:
+                self._conn.request("POST", self.caminho, body=body, headers=headers)
+                resp = self._conn.getresponse()
+                corpo = resp.read()
+            except (http.client.HTTPException, OSError):
+                self.fechar()
+                if reaproveitada:
+                    continue
+                raise
+            if resp.will_close:
+                self.fechar()
+            return resp.status, corpo
+        raise OSError("conexao recusada")  # inalcancavel: o laco sempre retorna ou levanta
+
+
+def _post_json(conexao: ConexaoHttp, payload, headers: dict, what: str, tentativas: int = 3) -> bool:
     """POST com retry nas falhas transitorias.
 
     Rede de evento oscila: um handshake TLS que estoura o tempo derrubava o lote
@@ -141,22 +177,21 @@ def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.
     escopo faltando nao melhoram insistindo, so' atrasam o proximo lote.
     """
     body = json.dumps(payload).encode("utf-8")
+    cabecalhos = {"Content-Type": "application/json", **headers}
     ultimo = "desconhecido"
     for tentativa in range(1, tentativas + 1):
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                resp.read()
-            if tentativa > 1:
-                print(f"[info] {what}: entregue na tentativa {tentativa}", file=sys.stderr)
-            return True
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")
-            if e.code < 500 and e.code != 429:
-                print(f"[erro] {what}: HTTP {e.code} - {detail[:300]}", file=sys.stderr)
+            status, corpo = conexao.post(body, cabecalhos)
+            if 200 <= status < 300:
+                if tentativa > 1:
+                    print(f"[info] {what}: entregue na tentativa {tentativa}", file=sys.stderr)
+                return True
+            detail = corpo.decode("utf-8", "replace")
+            if status < 500 and status != 429:
+                print(f"[erro] {what}: HTTP {status} - {detail[:300]}", file=sys.stderr)
                 return False
-            ultimo = f"HTTP {e.code} - {detail[:150]}"
-        except (urllib.error.URLError, OSError) as e:
+            ultimo = f"HTTP {status} - {detail[:150]}"
+        except (http.client.HTTPException, OSError) as e:
             ultimo = f"falha de conexao - {e}"
         if tentativa < tentativas:
             time.sleep(min(2 ** (tentativa - 1), 4))
@@ -164,12 +199,12 @@ def _post_json(url: str, payload, headers: dict, what: str, timeout: float = 10.
     return False
 
 
-def post_events(url: str, token: Optional[str], events: list, timeout: float = 10.0) -> None:
+def post_events(conexao: ConexaoHttp, token: Optional[str], events: list) -> None:
     """Envia para a Business Events API (/api/v2/bizevents/ingest)."""
     if not events:
         return
     headers = {"Authorization": f"Api-Token {token}"} if token else {}
-    _post_json(url, events, headers, f"bizevents ({len(events)} evento(s))", timeout)
+    _post_json(conexao, events, headers, f"bizevents ({len(events)} evento(s))")
 
 
 def _otlp_value(value):
@@ -188,7 +223,7 @@ def _otlp_value(value):
 def build_otlp_payload(events: list) -> dict:
     """Monta um ExportLogsServiceRequest em OTLP/HTTP JSON.
 
-    Usa urllib da stdlib de proposito: os rigs sao maquinas de jogo Windows e
+    So' stdlib de proposito: os rigs sao maquinas de jogo Windows e
     exigir `pip install opentelemetry-sdk` neles seria atrito desnecessario.
     """
     records = []
@@ -216,29 +251,36 @@ def build_otlp_payload(events: list) -> dict:
     }]}
 
 
-def post_otlp(url: str, events: list, timeout: float = 10.0) -> None:
+def post_otlp(conexao: ConexaoHttp, events: list) -> None:
     """Envia para o OTel Collector local, que repassa ao Dynatrace."""
     if not events:
         return
-    _post_json(url, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))", timeout)
+    _post_json(conexao, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))")
 
 
 class Collector:
     def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str,
-                 driver_name: Optional[str] = None, company_name: Optional[str] = None):
+                 driver_name: Optional[str] = None, sample_hz: float = 0.0):
         self.state = SessionState()
         self.rig_id = rig_id
         self.rig_name = rig_name
         self.driver_name = driver_name
-        self.company_name = company_name
         self.session_id = session_id
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
         self._sample_seq = 0
+        # Folga de 10% no intervalo: com o jogo a 20 Hz e jitter de rede, um
+        # corte exato em 100 ms deixaria passar ora 1, ora 2 quadros em cada 3.
+        self._intervalo = 0.9 / sample_hz if sample_hz > 0 else 0.0
+        self._ultimo_envio: Optional[float] = None
 
-    def handle_packet(self, raw: bytes) -> Optional[dict]:
+    def handle_packet(self, raw: bytes, agora: Optional[float] = None) -> Optional[dict]:
         """Processa um pacote UDP cru; retorna um evento pronto quando um
-        frame de telemetria (packetType 0) for decodificado, ou None."""
+        frame de telemetria (packetType 0) for decodificado, ou None.
+
+        `agora` e' o relogio usado no corte de frequencia (segundos). O replay
+        passa o horario gravado na captura, para que --speed 0 nao descarte
+        quase tudo; no UDP ao vivo vale o relogio da maquina."""
         if len(raw) < 12:
             return None
         header = decode_header(raw)
@@ -254,55 +296,95 @@ class Collector:
         elif header.packet_type == 8:
             self.state.ingest_vehicle_names(raw, len(raw))
         elif header.packet_type == 0:
+            # Os pacotes de estado (voltas, nomes) acima sao sempre processados;
+            # so' a amostra de telemetria e' rarefeita.
+            if self._intervalo:
+                instante = time.monotonic() if agora is None else agora
+                if self._ultimo_envio is not None and instante - self._ultimo_envio < self._intervalo:
+                    return None
+                self._ultimo_envio = instante
             telemetry = decode_telemetry(raw)
             self._sample_seq += 1
             return build_event(
                 self.rig_id, self.rig_name, self.session_id, self.state,
                 telemetry, self._last_timings, self.source_label, self._sample_seq,
-                self.driver_name, self.company_name,
+                self.driver_name,
             )
         return None
 
 
 class EnvioEmSegundoPlano:
-    """Tira o POST remoto da thread que le o socket UDP.
+    """Tira o POST da thread que le o socket UDP.
 
     Sem isto, uma rede lenta trava o recvfrom por dezenas de segundos e o buffer
     do socket transborda: perde-se telemetria que o jogo ja' tinha mandado. A fila
     e' limitada de proposito - se o destino ficar fora do ar por muito tempo,
-    e' melhor descartar o mais antigo e avisar do que inchar a memoria do rig.
+    descarta o lote MAIS ANTIGO: num painel ao vivo, o dado novo vale mais.
+
+    Cada thread tem a sua conexao keep-alive (`criar_envio` e' chamado uma vez
+    por thread). Mais de uma thread embaralha a ORDEM DE CHEGADA dos lotes, e
+    o app ja' sofreu com isso: o replay recortava a volta pela ordem do Grail e
+    comecava no meio. Por isso o padrao e' 1 thread; com keep-alive ela da' conta.
     """
 
-    def __init__(self, envia, nome: str, limite: int = 500):
+    def __init__(self, criar_envio, nome: str, limite: int = 300, trabalhadores: int = 1,
+                 max_por_envio: int = 500):
         self.fila: "queue.Queue[list]" = queue.Queue(maxsize=limite)
-        self.envia = envia
         self.nome = nome
+        self.max_por_envio = max_por_envio
         self.descartados = 0
-        self.thread = threading.Thread(target=self._laco, name=f"envio-{nome}", daemon=True)
-        self.thread.start()
+        self.threads = [
+            threading.Thread(target=self._laco, args=(criar_envio,), name=f"envio-{nome}-{i}", daemon=True)
+            for i in range(trabalhadores)
+        ]
+        for thread in self.threads:
+            thread.start()
 
-    def _laco(self) -> None:
+    def _laco(self, criar_envio) -> None:
+        envia = criar_envio()
         while True:
-            lote = self.fila.get()
+            lotes = [self.fila.get()]
+            # Junta no mesmo POST o que se acumulou enquanto o anterior viajava.
+            # Com uma thread so' (para manter a ordem), um POST mais lento que o
+            # intervalo de envio fazia a fila crescer e os dados chegarem em
+            # rajadas - no Ao vivo a bolinha parava e depois corria. Assim o
+            # POST cresce quando a rede piora, e a fila nao.
+            while sum(len(l) for l in lotes) < self.max_por_envio:
+                try:
+                    lotes.append(self.fila.get_nowait())
+                except queue.Empty:
+                    break
             try:
-                if lote:
-                    self.envia(lote)
+                juntos = [amostra for lote in lotes for amostra in lote]
+                if juntos:
+                    envia(juntos)
             except Exception as erro:  # nunca deixar a thread de envio morrer
                 print(f"[erro] {self.nome}: {erro}", file=sys.stderr)
             finally:
-                self.fila.task_done()
+                for _ in lotes:
+                    self.fila.task_done()
 
     def enfileirar(self, lote: list) -> None:
-        try:
-            self.fila.put_nowait(lote)
-        except queue.Full:
-            self.descartados += len(lote)
-            print(f"[!!] {self.nome}: fila cheia, {self.descartados} amostras descartadas no total",
-                  file=sys.stderr)
+        while True:
+            try:
+                self.fila.put_nowait(lote)
+                return
+            except queue.Full:
+                try:
+                    antigo = self.fila.get_nowait()
+                except queue.Empty:
+                    continue
+                self.fila.task_done()
+                self.descartados += len(antigo)
+                print(f"[!!] {self.nome}: fila cheia, {self.descartados} amostras antigas descartadas no total",
+                      file=sys.stderr)
+
+    def pendentes(self) -> int:
+        return self.fila.qsize()
 
     def drenar(self, segundos: float = 15.0) -> None:
         limite = time.time() + segundos
-        while not self.fila.empty() and time.time() < limite:
+        while self.fila.unfinished_tasks and time.time() < limite:
             time.sleep(0.2)
 
 
@@ -314,11 +396,24 @@ class Dispatcher:
         self.ingest_url = ingest_url
         self.to_bizevents = args.sink in ("bizevents", "both") and bool(ingest_url) and not args.dry_run
         self.to_otlp = args.sink in ("otlp", "both") and not args.dry_run
-        # So' o bizevents sai da maquina; o OTLP vai para o collector em 127.0.0.1,
-        # que aceita na hora e ja' tem fila em disco e reenvio proprios.
-        self._bizevents = EnvioEmSegundoPlano(
-            lambda lote: post_events(self.ingest_url, self.args.token, lote), "bizevents",
-        ) if self.to_bizevents else None
+        # Os dois destinos saem da thread do UDP, cada um com UMA thread: a ordem
+        # de chegada fica igual a' ordem do jogo. Com 2 threads no bizevents os
+        # lotes chegavam embaralhados ao Grail (v1.10.0/1.10.1). A conexao
+        # keep-alive e' o que faz uma thread so' acompanhar o rig.
+        self._bizevents = EnvioEmSegundoPlano(self._envio_bizevents, "bizevents") \
+            if self.to_bizevents else None
+        self._otlp = EnvioEmSegundoPlano(self._envio_otlp, "otlp") if self.to_otlp else None
+
+    def _envio_bizevents(self):
+        conexao = ConexaoHttp(self.ingest_url)
+        return lambda lote: post_events(conexao, self.args.token, lote)
+
+    def _envio_otlp(self):
+        conexao = ConexaoHttp(self.args.otlp_endpoint)
+        return lambda lote: post_otlp(conexao, lote)
+
+    def _filas(self):
+        return [f for f in (self._bizevents, self._otlp) if f is not None]
 
     def describe(self) -> str:
         if self.args.dry_run:
@@ -333,26 +428,29 @@ class Dispatcher:
     def enabled(self) -> bool:
         return self.to_bizevents or self.to_otlp
 
+    def pendentes(self) -> int:
+        """Lotes esperando envio. Se isto so' cresce, o destino nao acompanha o
+        rig e o atraso no painel vai subir junto."""
+        return sum(f.pendentes() for f in self._filas())
+
     def flush(self, batch: list) -> None:
         if not batch:
             return
-        if self._bizevents is not None:
-            self._bizevents.enfileirar(list(batch))
-        if self.to_otlp:
-            post_otlp(self.args.otlp_endpoint, batch)
+        for fila in self._filas():
+            fila.enfileirar(list(batch))
 
     def encerrar(self) -> None:
         """Da' chance de a fila esvaziar antes de o processo morrer."""
-        if self._bizevents is not None:
-            self._bizevents.drenar()
+        for fila in self._filas():
+            fila.drenar()
 
 
 def run_udp(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
-                          args.driver_name, args.company_name)
+                          args.driver_name, args.sample_hz)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
-    print(f"[info] escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
+    print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
     print(f"[info] destino: {dispatcher.describe()}")
 
     batch = []
@@ -372,7 +470,8 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
                 sent += len(batch)
                 batch = []
                 last_flush = time.time()
-                print(f"[info] {sent} amostras enviadas", end="\r", flush=True)
+                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
+                      end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")
         dispatcher.flush(batch)
@@ -385,7 +484,7 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
 
 def run_replay(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real",
-                          args.driver_name, args.company_name)
+                          args.driver_name, args.sample_hz)
     print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
@@ -415,7 +514,7 @@ def run_replay(args, dispatcher: "Dispatcher") -> int:
                     time.sleep(min(delay, 1.0))
             prev_t = t
 
-            ev = collector.handle_packet(raw)
+            ev = collector.handle_packet(raw, t.timestamp())
             n += 1
             if ev:
                 if not dispatcher.enabled():
@@ -446,14 +545,18 @@ def main() -> int:
     parser.add_argument("--loop", action="store_true", help="[replay] repete o arquivo indefinidamente")
     parser.add_argument("--speed", type=float, default=1.0, help="[replay] multiplicador de velocidade (0 = o mais rapido possivel, sem pausas)")
     parser.add_argument("--batch-size", type=int, default=10)
-    parser.add_argument("--flush-interval", type=float, default=1.0, help="segundos entre envios ao Dynatrace")
+    # Era 1.0s - metade do caminho de ponta a ponta até o mapa "parecer" ao
+    # vivo é esta espera mais o timeout do batch do OTel Collector (ver
+    # otel/otelcol-racing.yaml). Baixar os dois reduz o atraso percebido; o
+    # resto (ingestão e indexação no Grail) não é configurável por aqui.
+    parser.add_argument("--flush-interval", type=float, default=0.5, help="segundos entre envios ao Dynatrace")
+    parser.add_argument(
+        "--sample-hz", type=float, default=float(os.environ.get("RACING_SAMPLE_HZ", DEFAULT_SAMPLE_HZ)),
+        help=f"amostras de telemetria por segundo enviadas (default: {DEFAULT_SAMPLE_HZ:g}; 0 = todas as do jogo)",
+    )
     parser.add_argument(
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",
-    )
-    parser.add_argument(
-        "--company-name", default=os.environ.get("RACING_COMPANY") or None,
-        help="empresa do piloto; alimenta o podio 'Disputa entre empresas' do app",
     )
     parser.add_argument("--endpoint", default=os.environ.get("DT_ENV_URL"))
     parser.add_argument("--token", default=os.environ.get("DT_API_TOKEN"))

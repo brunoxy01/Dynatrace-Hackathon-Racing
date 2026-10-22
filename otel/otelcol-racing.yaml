@@ -25,10 +25,17 @@ processors:
     limit_mib: 256
     spike_limit_mib: 64
 
+  # O timeout e' quem manda: a 10 amostras/s um lote de 200 nunca enchia, e
+  # cada amostra esperava os 5s inteiros so' aqui. 1s mantem poucas requisicoes
+  # por segundo e tira esse atraso do caminho.
   batch:
-    send_batch_size: 200
+    # timeout era 5s (depois 2s) - o maior atraso configuravel da cadeia. A 10
+    # amostras/s um lote de 200 nunca enchia e cada amostra esperava o timeout
+    # inteiro so' aqui. 1s mantem poucas requisicoes por segundo. A ingestao e
+    # indexacao no Grail em si nao sao afetadas por isto.
+    send_batch_size: 50
     send_batch_max_size: 500
-    timeout: 5s
+    timeout: 1s
 
 extensions:
   # Fila em disco: se a rede do evento cair, as amostras ficam guardadas e sao
@@ -43,15 +50,19 @@ exporters:
     endpoint: ${env:DT_OTLP_ENDPOINT}
     headers:
       Authorization: Api-Token ${env:DT_API_TOKEN}
+    # Primeira nova tentativa em 1s: um soluco de rede nao deve custar 5s de
+    # mapa parado. Em queda longa o intervalo cresce ate' 15s e a fila em disco
+    # segura o resto.
     retry_on_failure:
       enabled: true
-      initial_interval: 5s
-      max_interval: 30s
+      initial_interval: 1s
+      max_interval: 15s
       max_elapsed_time: 300s
+    # 4 consumidores: com 2, um POST lento para o tenant segurava o lote seguinte.
     sending_queue:
       enabled: true
       storage: file_storage/fila
-      num_consumers: 2
+      num_consumers: 4
       queue_size: 1000
 
 service:

@@ -11,7 +11,6 @@ set RIG_NAME=Simulador 1
 rem --- Quem esta na cadeira. Preenchido, vence o nome do perfil do AMS2 ---
 rem --- (que e o da conta Steam). Em branco, o nome vem do jogo.         ---
 set RACING_DRIVER=
-set RACING_COMPANY=
 
 rem --- Ambiente Dynatrace (classic, terminado em .live.dynatrace.com) ---
 set DT_ENV_URL=https://SEU_AMBIENTE.live.dynatrace.com
@@ -27,5 +26,10 @@ set DT_OTLP_ENDPOINT=%DT_ENV_URL%/api/v2/otlp
 rem --- Porta UDP que o AMS2 transmite (Options > System > UDP). ---
 set AMS2_PORT=5606
 
-rem --- Destinos: bizevents, otlp ou both ---
-set RACING_SINK=both
+rem --- Destinos: bizevents (recomendado), otlp ou both.         ---
+rem --- otlp precisa do escopo logs.ingest no token.              ---
+rem --- "both" manda cada amostra duas vezes e dobra o volume.    ---
+set RACING_SINK=bizevents
+
+rem --- Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas. ---
+set RACING_SAMPLE_HZ=10

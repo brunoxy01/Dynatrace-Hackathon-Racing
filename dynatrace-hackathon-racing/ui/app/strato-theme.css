@@ -46,22 +46,32 @@
    pular em vez de deslizar. Esta regra ganha de racing.css por vir depois no
    import (mesma especificidade), então é aqui que o valor efetivo mora. */
 .car-marker {transition:transform 48ms linear;}
+/* No Ao vivo a posição já é interpolada e redesenhada a cada quadro; uma
+   transição por cima só atrasaria e reiniciaria a cada quadro. */
+.car-marker.live {transition:none;}
+/* Volta recém-concluída no cabeçalho da telemetria do piloto: o tempo oficial
+   fica cravado por até 1 minuto (ou até a próxima volta fechar). */
+.volta-concluida {font-size:12px;color:var(--dt-colors-charts-sequential-purple-color-06-default, #a982f5);font-weight:600;white-space:nowrap;}
+.volta-concluida b {font-size:15px;margin-left:6px;letter-spacing:-.3px;}
 @media(max-width:1080px){.racing-app{padding:var(--dt-spacings-size-24)}.hero-grid{gap:var(--dt-spacings-size-16)}}
 @media(max-width:780px){.racing-app,.leaderboard{padding:var(--dt-spacings-size-16)}.identity h1{font-size:var(--dt-typography-heading-level-3-size)!important}}
 @media(prefers-reduced-motion:reduce){.metric-legend,.car-marker{transition:none}}
 
-/* One shared animation phase for all three podium cards. */
+/* One shared animation phase for all three podium cards. Cada card define
+   --rank-cor (ouro/prata/bronze, em .place-1/2/3) - a borda rotativa usa essa
+   cor em vez de uma única cor fixa para as três posições. Mesmo efeito do
+   brilho do mapa da pista, só que colorido por posição. */
 @property --podium-angle { syntax: '<angle>'; initial-value: 0deg; inherits: true; }
 .podium { animation: podium-orbit 8s linear infinite; }
 .company { position:relative; border:1px solid var(--line); }
 .company::before {
   content:''; position:absolute; inset:0; border-radius:inherit; padding:1px;
-  background:conic-gradient(from var(--podium-angle), transparent 0% 65%, color-mix(in srgb,var(--racing-purple) 65%,transparent) 82%, transparent 100%);
+  background:conic-gradient(from var(--podium-angle), transparent 0% 65%, color-mix(in srgb,var(--rank-cor, var(--racing-purple)) 65%,transparent) 82%, transparent 100%);
   mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite:exclude;
   pointer-events:none;
 }
 @keyframes podium-orbit { to { --podium-angle:360deg; } }
-@media(prefers-reduced-motion:reduce){.podium{animation:none}.company::before{background:color-mix(in srgb,var(--racing-purple) 30%,transparent)}}
+@media(prefers-reduced-motion:reduce){.podium{animation:none}.company::before{background:color-mix(in srgb,var(--rank-cor, var(--racing-purple)) 30%,transparent)}}
 .track-panel::before {
   content:''; position:absolute; inset:0; border-radius:inherit; padding:1px;
   background:conic-gradient(from var(--podium-angle), transparent 0% 55%, var(--dt-colors-charts-sequential-purple-color-05-default) 78%, transparent 100%);

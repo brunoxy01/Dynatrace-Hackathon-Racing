@@ -128,13 +128,13 @@ def demo_grid(lap):
     """Original replay plus three explicitly synthetic participants on the same route."""
     result = [{**r, 'source': 'replay'} for r in lap]
     origin = datetime.fromisoformat(lap[0]['timestamp'])
-    profiles = [('Bruno Lima', 'Dynatrace', 1.02, 0), ('Joãozinho', 'Bradesco', .98, 2), ('Agnes', 'Caixa', 1.04, 4)]
-    for index, (name, company, pace, delay) in enumerate(profiles, 2):
+    profiles = [('Bruno Lima', 1.02, 0), ('Joãozinho', .98, 2), ('Agnes', 1.04, 4)]
+    for index, (name, pace, delay) in enumerate(profiles, 2):
         for row in lap:
             event = dict(row)
             elapsed = (datetime.fromisoformat(row['timestamp']) - origin).total_seconds()
             event.update({'timestamp': (origin + timedelta(seconds=elapsed * pace + delay)).isoformat(),
-                          'driver_name': name, 'company_name': company, 'rig.id': f'demo-{index:02}',
+                          'driver_name': name, 'rig.id': f'demo-{index:02}',
                           'source': 'demo', 'simulation': True})
             for field in ('lap_time_s', 'last_lap_s', 'best_lap_s'):
                 if event.get(field) is not None:

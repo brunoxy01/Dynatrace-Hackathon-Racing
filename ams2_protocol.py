@@ -160,9 +160,13 @@ def decode_timings(raw: bytes) -> dict:
     off = TIMINGS_PARTICIPANTS_OFFSET + local_idx * PARTICIPANT_INFO_SIZE
 
     race_pos_byte = _u8(raw, off + 14)
+    # sSector: os 3 bits baixos sao o setor atual (0 = S1, 1 = S2, 2 = S3); os
+    # de cima carregam precisao extra da posicao no mundo. Conferido na captura.
+    sector_byte = _u8(raw, off + 15)
     race_state_byte = _u8(raw, off + 20)
     current_lap = _u8(raw, off + 21)
     current_time = _f32(raw, off + 22)  # tempo de volta em andamento (s); -1 = nao disponivel ainda
+    sector_time = _f32(raw, off + 26)   # tempo dentro do setor atual (s); -1 = idem
     car_index_raw = _u16(raw, off + 18)
 
     return {
@@ -171,6 +175,8 @@ def decode_timings(raw: bytes) -> dict:
         "lap_number": current_lap,
         "lap_race_position": race_pos_byte & 0x7F,
         "lap_time_s": None if current_time < 0 else round(current_time, 3),
+        "sector": sector_byte & 0x07,
+        "sector_time_s": None if sector_time < 0 else round(sector_time, 3),
         "lap_invalidated": bool(race_state_byte & 0x80),
         "car_index": car_index_raw & 0x7FFF,
         "car_index_is_player": car_index_raw == 0xFFFF,
@@ -253,8 +259,18 @@ class SessionState:
     track_location: Optional[str] = None
     best_lap_s: Optional[float] = None
     last_lap_s: Optional[float] = None
+    # Setores da ULTIMA volta concluida (s1, s2, s3), valendo enquanto
+    # last_lap_s for `last_lap_sectors_for` - mesma semantica do last_lap_s,
+    # que o jogo repete ao longo da volta seguinte.
+    last_lap_sectors: Optional[tuple] = None
+    last_lap_sectors_for: Optional[float] = None
     _last_car_index: Optional[int] = field(default=None, repr=False)
     _last_participant_index: Optional[int] = field(default=None, repr=False)
+    _sector: Optional[int] = field(default=None, repr=False)
+    _maior_cur: Optional[float] = field(default=None, repr=False)
+    _s1: Optional[float] = field(default=None, repr=False)
+    _s2: Optional[float] = field(default=None, repr=False)
+    _concluida: Optional[tuple] = field(default=None, repr=False)
 
     def ingest_participants(self, raw: bytes) -> None:
         names = decode_participants(raw)
@@ -283,6 +299,7 @@ class SessionState:
         if s:
             self.last_lap_s = s["last_lap_s"]
             self.best_lap_s = s["fastest_lap_s"]
+            self._fechar_setores()
 
     def ingest_race_definition(self, raw: bytes) -> None:
         rd = decode_race_definition(raw)
@@ -295,4 +312,57 @@ class SessionState:
         t = decode_timings(raw)
         self._last_car_index = t["car_index"]
         self._last_participant_index = t["local_participant_index"]
+        self._acompanhar_setores(t)
         return t
+
+    def _acompanhar_setores(self, t: dict) -> None:
+        """S1 e S2 saem do proprio cronometro na virada de setor: o tempo de
+        volta menos o que ja' correu dentro do setor novo. S3 so' fecha com o
+        tempo oficial da volta (pacote 7), em _fechar_setores.
+
+        A volta fecha na passagem S3 -> S1 (a linha), sem depender do numero da
+        volta: o jogo as vezes vira o setor um pacote antes de incrementar a
+        volta (ou incrementa antes), e o cronometro pode zerar antes da virada.
+        Exigir as duas mudancas no mesmo pacote perdia os setores dessas voltas.
+        Qualquer outro salto de setor (box, reinicio, pacote perdido) descarta
+        a volta em andamento: ela fica sem setores em vez de setores errados.
+        Volta em que o coletor entrou no meio tambem fica sem setores."""
+        setor, cur, no_setor = t["sector"], t["lap_time_s"], t["sector_time_s"]
+        anterior = self._sector
+        if anterior is not None and setor != anterior:
+            if anterior == 2 and setor == 0:
+                if self._s1 is not None and self._s2 is not None and self._maior_cur is not None:
+                    # O tempo oficial pode chegar antes ou depois da linha; guarda o
+                    # maior cronometro da volta para casar com ele.
+                    self._concluida = (self._s1, self._s2, self._maior_cur)
+                self._s1 = self._s2 = None
+                self._maior_cur = None
+            elif anterior == 0 and setor == 1 and cur is not None and no_setor is not None:
+                self._s1 = round(cur - no_setor, 3)
+            elif anterior == 1 and setor == 2 and self._s1 is not None and cur is not None and no_setor is not None:
+                self._s2 = round(cur - no_setor - self._s1, 3)
+            else:
+                self._s1 = self._s2 = None
+        self._sector = setor
+        if cur is not None and (self._maior_cur is None or cur > self._maior_cur):
+            self._maior_cur = cur
+        self._fechar_setores()
+
+    def _fechar_setores(self) -> None:
+        if self._concluida is None or not self.last_lap_s:
+            return
+        s1, s2, estimativa = self._concluida
+        # So' fecha com o tempo DESTA volta: um last_lap_s antigo ainda em vigor
+        # (o pacote 7 nao chegou) fica longe da estimativa e e' ignorado.
+        if abs(self.last_lap_s - estimativa) > 1.0:
+            return
+        s3 = round(self.last_lap_s - s1 - s2, 3)
+        self.last_lap_sectors = (s1, s2, s3) if min(s1, s2, s3) > 0 else None
+        self.last_lap_sectors_for = self.last_lap_s
+        self._concluida = None
+
+    def sectors_of_last_lap(self) -> tuple:
+        """(s1, s2, s3) da volta em last_lap_s, ou (None, None, None)."""
+        if self.last_lap_sectors and self.last_lap_sectors_for == self.last_lap_s:
+            return self.last_lap_sectors
+        return (None, None, None)
