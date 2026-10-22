@@ -162,6 +162,16 @@ export function summarize(events: Telemetry[]): Driver[] {
   return [...drivers.values()].sort((a,b) => (a.best ?? Infinity) - (b.best ?? Infinity) || a.driver_name!.localeCompare(b.driver_name!));
 }
 
+// Quem está na pista AGORA — não só o piloto mais recente. Com 2+
+// simuladores rodando ao mesmo tempo, cada um com telemetria fresca (mesma
+// janela do indicador de pulso do Ao vivo) ganha o próprio cartão na tela.
+// Mais recente primeiro; sem limite de quantidade.
+export function activeDrivers(drivers: Driver[], now: number, windowMs: number): Driver[] {
+  return drivers
+    .filter(d => now - Date.parse(d.timestamp) <= windowMs)
+    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
+
 // Nome do piloto e carro chegam em pacotes UDP próprios, uns 27s depois do
 // primeiro quadro de telemetria, e vêm nulos até lá — 535 dos 7.236 quadros da
 // captura real. Como a identidade é a sessão, esses quadros pertencem a alguém
