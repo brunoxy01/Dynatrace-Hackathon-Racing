@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver, activeDrivers } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -96,6 +96,26 @@ test('driver podium takes the fastest lap of each driver, not the first one list
   const podio = driverPodium(voltas, 3);
   assert.deepEqual(podio.map(l => [l.driver_name, l.last_lap_s]),
     [['Plinio', 97.4], ['Ana', 110.0], ['Bruno', 120.0]]);
+});
+test('activeDrivers keeps every pilot with fresh telemetry, not just the most recent one', () => {
+  // 2+ simuladores ao mesmo tempo: os dois devem ganhar cartão, não só quem
+  // mandou a amostra mais nova.
+  const agora = Date.parse('2026-09-19T00:01:00Z');
+  const drivers = [
+    {...sample, driver_name:'Bruno', timestamp:'2026-09-19T00:00:55Z'},
+    {...sample, driver_name:'Plinio', timestamp:'2026-09-19T00:00:50Z'},
+    {...sample, driver_name:'Velho', timestamp:'2026-09-18T23:58:00Z'},
+  ];
+  const ativos = activeDrivers(drivers, agora, 60000);
+  assert.deepEqual(ativos.map(d => d.driver_name), ['Bruno', 'Plinio']);
+});
+test('activeDrivers sorts the most recently seen pilot first', () => {
+  const agora = Date.parse('2026-09-19T00:01:00Z');
+  const drivers = [
+    {...sample, driver_name:'Plinio', timestamp:'2026-09-19T00:00:50Z'},
+    {...sample, driver_name:'Bruno', timestamp:'2026-09-19T00:00:58Z'},
+  ];
+  assert.deepEqual(activeDrivers(drivers, agora, 60000).map(d => d.driver_name), ['Bruno', 'Plinio']);
 });
 test('the lap window ends at the close and reaches back one lap time', () => {
   // A volta fechou às 00:01:44 e durou 104,015s. A margem é assimétrica: folga

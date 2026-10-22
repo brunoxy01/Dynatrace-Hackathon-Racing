@@ -13,7 +13,7 @@ import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { createLiveClock, type LiveClock } from './liveClock';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, activeDrivers } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -452,8 +452,9 @@ export const Dashboard = () => {
   // Relógio único do Ao vivo (carro no mapa + painel do piloto) e a trilha do
   // piloto em foco, de onde o painel lê a amostra no instante do relógio.
   const liveClock = useMemo(() => createLiveClock(), []);
+  const trilhas = useMemo(() => trails(filtered), [filtered]);
   const focusKey = focus?.key;
-  const focusTrail = useMemo(() => focusKey ? trails(filtered).find(t => driverKey(t[0]) === focusKey) : undefined, [filtered, focusKey]);
+  const focusTrail = useMemo(() => focusKey ? trilhas.find(t => driverKey(t[0]) === focusKey) : undefined, [trilhas, focusKey]);
   const lapLoading = lapBiz.isLoading || lapOtel.isLoading;
   // Ticker próprio: o "sem telemetria há Ns" precisa subir sozinho entre as
   // reexecuções da consulta, que só acontecem a cada 30s.
@@ -479,6 +480,15 @@ export const Dashboard = () => {
       if (now - at <= window) { fresh++; rigs.add(e['rig.id']); }
     }
     return { fresh, rigs: rigs.size, silentFor: newest ? Math.round((now - newest) / 1000) : null };
+  })();
+  // Quem está na pista AGORA, não só o mais recente: com 2+ simuladores
+  // rodando ao mesmo tempo, cada piloto com telemetria fresca (mesma janela
+  // de 60s do indicador de pulso acima) ganha o próprio cartão. Sem filtro de
+  // piloto nem limite de quantidade — cabe quantos simuladores existirem.
+  const pilotosAoVivo = ((): Driver[] => {
+    void tick;
+    if (mode !== 'live' || selected !== 'all') return focus ? [focus] : [];
+    return activeDrivers(drivers, Date.now(), 60000);
   })();
   const changeMode = (value: string) => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);
@@ -513,11 +523,26 @@ export const Dashboard = () => {
   const secaoTelemetria = (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null = null) =>
     <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{ranking.filter(l => (l.last_lap_s ?? Infinity) < voltaConcluida).length + 1}º · {lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
 
+  const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{piloto?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
+
+  // Um cartão por piloto com telemetria fresca, não só o mais recente — com
+  // 2+ simuladores ativos ao mesmo tempo, a coluna empilha um cartão completo
+  // (ficha + telemetria ao vivo) por piloto, sem limite de quantidade.
   const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
-    <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{focus?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{focus?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{focus?.driver_name ?? 'Aguardando piloto'}</Heading><p>{focus?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{focus?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(focus?.lap_race_position)}</b></span></div></section>
-    {mode === 'live'
-      ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo, concluida)}/>
-      : secaoTelemetria(focus, focus?.lap_time_s)}
+    {mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1
+      ? pilotosAoVivo.map(piloto => {
+          const trilha = trilhas.find(t => driverKey(t[0]) === piloto.key);
+          return <div className="driver-column" key={piloto.key}>
+            {cartaoDoPiloto(piloto, subtitulo)}
+            <TelemetriaAoVivo liveClock={liveClock} trail={trilha} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? piloto, tempo === undefined ? piloto.lap_time_s : tempo, concluida)}/>
+          </div>;
+        })
+      : <>
+        {cartaoDoPiloto(focus, subtitulo)}
+        {mode === 'live'
+          ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo, concluida)}/>
+          : secaoTelemetria(focus, focus?.lap_time_s)}
+      </>}
   </div>;
 
   // Por ora, pódio de pilotos em vez de empresas (pedido explícito) - mesma
