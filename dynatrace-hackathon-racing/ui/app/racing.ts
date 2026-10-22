@@ -228,6 +228,10 @@ export function trails(events: Telemetry[]): Telemetry[][] {
 // sem essa informação (dados antigos) seguem a regra anterior: fica a
 // ocorrência mais antiga.
 export const REANNOUNCE_MIN_CLOCK_S = 3;
+// Duas linhas reais do mesmo piloto, simulador e tempo a menos de 1 minuto uma
+// da outra são a MESMA volta (a inserida na hora pelo Ao vivo e a que o Grail
+// devolveu): ninguém fecha duas voltas idênticas em menos de um minuto.
+const MESMA_VOLTA_MS = 60000;
 export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
   const grupos = new Map<string, Telemetry[]>();
   for (const lap of laps) {
@@ -238,7 +242,13 @@ export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
   const voltas: Telemetry[] = [];
   for (const grupo of grupos.values()) {
     const reais = grupo.filter(l => finite(l.lap_start_s) && l.lap_start_s <= REANNOUNCE_MIN_CLOCK_S);
-    if (reais.length) voltas.push(...reais);
+    // Fica a primeira de cada volta física: o Grail vem antes no merge, então
+    // a linha dele (com setores e velocidade calculados no Grail) prevalece.
+    const distintas: Telemetry[] = [];
+    for (const l of reais) {
+      if (!distintas.some(d => Math.abs(Date.parse(d.timestamp) - Date.parse(l.timestamp)) < MESMA_VOLTA_MS)) distintas.push(l);
+    }
+    if (distintas.length) voltas.push(...distintas);
     else voltas.push(grupo.reduce((a, b) => Date.parse(b.timestamp) < Date.parse(a.timestamp) ? b : a));
   }
   return voltas;
@@ -402,7 +412,10 @@ export function lapCompletions(trail: Telemetry[]): Telemetry[] {
         while (j < trail.length && trail[j].last_lap_s === v.last_lap_s && !finite(trail[j].last_lap_s1)) j++;
         const comSetores = j < trail.length && trail[j].last_lap_s === v.last_lap_s ? trail[j] : v;
         // Detectada pela virada do cronômetro na linha: é volta real (lap_start_s 0).
-        voltas.push({...v, last_lap_s1: comSetores.last_lap_s1, last_lap_s2: comSetores.last_lap_s2, last_lap_s3: comSetores.last_lap_s3,
+        // Sem o sample.id do quadro: é uma linha de VOLTA, e a do Grail não tem
+        // esse campo. Com ele, as duas não eram reconhecidas como a mesma volta
+        // e o placar mostrava a volta duplicada até a próxima recarga.
+        voltas.push({...v, 'sample.id': null, last_lap_s1: comSetores.last_lap_s1, last_lap_s2: comSetores.last_lap_s2, last_lap_s3: comSetores.last_lap_s3,
           top_speed_kmh: topSpeedOf(trail.slice(inicio, i)), lap_start_s: 0});
       }
       inicio = i;

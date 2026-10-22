@@ -165,6 +165,41 @@ class SectorOrderTests(unittest.TestCase):
     def test_official_time_arriving_before_the_line(self):
         self.assertEqual((25.1, 52.0, 24.84), self._volta([(4, 0, 0.05, 0.05)], tempo_oficial_antes=True))
 
+    def test_sector_time_missing_on_the_transition_packet(self):
+        # No pacote da virada o jogo ainda manda "tempo no setor" indisponivel
+        # (-1 -> None); o pacote seguinte do mesmo setor basta.
+        from ams2_protocol import SessionState
+        estado = SessionState()
+        for volta, setor, cron, no_setor in [(3, 0, 0.05, 0.05), (3, 0, 25.0, 25.0), (3, 1, 25.15, None), (3, 1, 25.2, 0.1),
+                                             (3, 1, 77.0, 51.9), (3, 2, 77.15, None), (3, 2, 77.2, 0.1), (3, 2, 101.9, 24.8), (4, 0, 0.05, 0.05)]:
+            estado._acompanhar_setores({"lap_number": volta, "sector": setor, "lap_time_s": cron, "sector_time_s": no_setor})
+        estado.last_lap_s = 101.94
+        estado._fechar_setores()
+        self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
+
+    def test_sector_flicker_near_a_boundary_keeps_the_lap(self):
+        # S2 -> S1 -> S2 por um pacote perto da divisa: antes descartava a volta.
+        self.assertEqual((25.1, 52.0, 24.84), self._volta([(3, 1, 101.91, 76.8), (3, 2, 101.92, 24.82), (4, 0, 0.05, 0.05)]))
+
+    def test_restart_in_s3_does_not_overwrite_the_previous_lap_sectors(self):
+        from ams2_protocol import SessionState
+        estado = SessionState()
+
+        def timings(volta, setor, cron, no_setor):
+            estado._acompanhar_setores({"lap_number": volta, "sector": setor, "lap_time_s": cron, "sector_time_s": no_setor})
+
+        for pacote in [(3, 0, 0.05, 0.05), (3, 1, 25.15, 0.05), (3, 2, 77.15, 0.05), (3, 2, 101.9, 24.8), (4, 0, 0.05, 0.05)]:
+            timings(*pacote)
+        estado.last_lap_s = 101.94
+        estado._fechar_setores()
+        self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
+        # Volta seguinte: reinicio em S3 com o cronometro em 101,5 s (perto do
+        # tempo anterior) e volta para S1 com o cronometro zerado.
+        for pacote in [(4, 1, 26.0, 0.1), (4, 2, 80.0, 0.1), (4, 2, 101.5, 21.6), (4, 0, 0.05, 0.05)]:
+            timings(*pacote)
+        estado._fechar_setores()
+        self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
+
     def test_out_of_order_sector_jump_drops_the_lap_instead_of_inventing(self):
         # Reinicio/box no meio da volta: S3 -> S2 -> S3 -> linha. Sem setores.
         self.assertEqual((None, None, None), self._volta([(3, 1, 10.0, 1.0), (3, 2, 11.0, 0.1), (4, 0, 0.05, 0.05)]))
