@@ -788,3 +788,17 @@ test('a re-announced lap time after a collector restart still counts once', () =
   // Se a volta real ficou fora do período, o reanúncio é o que sobra dela.
   assert.deepEqual(dedupeLaps([reanuncio]), [reanuncio]);
 });
+
+test('a lap inserted live and the same lap back from Grail show once', () => {
+  const {quadros} = fimDeVolta();
+  const [local] = lapCompletions(quadros);
+  assert.equal(local['sample.id'], null, 'linha de volta não leva o sample.id do quadro');
+  // A linha do Grail: mesmo timestamp, sem sample.id, com setores do Grail.
+  const grail = {...local, 'sample.id': undefined, last_lap_s1:25.1, last_lap_s2:52.0, last_lap_s3:24.84, lap_start_s:0.05};
+  const unicas = dedupeLaps(mergeTelemetry([grail], [local]));
+  assert.equal(unicas.length, 1);
+  assert.equal(unicas[0].last_lap_s3, 24.84, 'fica a linha do Grail');
+  // Mesmo com o timestamp do Grail alguns segundos diferente, continua uma só.
+  const grailDeslocado = {...grail, timestamp:new Date(Date.parse(grail.timestamp) + 3000).toISOString()};
+  assert.equal(dedupeLaps(mergeTelemetry([grailDeslocado], [local])).length, 1);
+});

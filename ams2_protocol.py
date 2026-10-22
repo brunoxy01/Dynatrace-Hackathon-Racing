@@ -268,8 +268,9 @@ class SessionState:
     _last_participant_index: Optional[int] = field(default=None, repr=False)
     _sector: Optional[int] = field(default=None, repr=False)
     _maior_cur: Optional[float] = field(default=None, repr=False)
-    _s1: Optional[float] = field(default=None, repr=False)
-    _s2: Optional[float] = field(default=None, repr=False)
+    _ultimo_cur: Optional[float] = field(default=None, repr=False)
+    # Instante (no cronometro da volta) em que S2 e S3 comecaram: {1: ..., 2: ...}
+    _inicio_setor: dict = field(default_factory=dict, repr=False)
     _concluida: Optional[tuple] = field(default=None, repr=False)
 
     def ingest_participants(self, raw: bytes) -> None:
@@ -316,40 +317,58 @@ class SessionState:
         return t
 
     def _acompanhar_setores(self, t: dict) -> None:
-        """S1 e S2 saem do proprio cronometro na virada de setor: o tempo de
-        volta menos o que ja' correu dentro do setor novo. S3 so' fecha com o
-        tempo oficial da volta (pacote 7), em _fechar_setores.
+        """Os setores saem do instante em que cada setor COMECOU, no cronometro
+        da volta: em qualquer pacote dentro do setor, cronometro menos o tempo
+        ja' corrido no setor. Inicio de S2 = S1; inicio de S3 = S1 + S2; S3 fecha
+        com o tempo oficial da volta (pacote 7), em _fechar_setores.
+
+        Por que assim: calcular so' no pacote exato da virada perdia a volta se
+        ali o jogo mandasse o tempo no setor ainda indisponivel, ou se o setor
+        "piscasse" por um pacote perto da divisa. Agora o primeiro pacote valido
+        do setor basta, e um pacote estranho nao derruba a volta.
 
         A volta fecha na passagem S3 -> S1 (a linha), sem depender do numero da
-        volta: o jogo as vezes vira o setor um pacote antes de incrementar a
-        volta (ou incrementa antes), e o cronometro pode zerar antes da virada.
-        Exigir as duas mudancas no mesmo pacote perdia os setores dessas voltas.
-        Qualquer outro salto de setor (box, reinicio, pacote perdido) descarta
-        a volta em andamento: ela fica sem setores em vez de setores errados.
-        Volta em que o coletor entrou no meio tambem fica sem setores."""
+        volta, que o jogo as vezes incrementa um pacote antes ou depois. Se o
+        cronometro zera ainda em S3, a volta fecha ali mesmo. Cronometro zerando
+        no meio da volta (box, reinicio) descarta a volta em andamento: ela fica
+        sem setores em vez de setores errados."""
         setor, cur, no_setor = t["sector"], t["lap_time_s"], t["sector_time_s"]
         anterior = self._sector
-        if anterior is not None and setor != anterior:
-            if anterior == 2 and setor == 0:
-                if self._s1 is not None and self._s2 is not None and self._maior_cur is not None:
-                    # O tempo oficial pode chegar antes ou depois da linha; guarda o
-                    # maior cronometro da volta para casar com ele.
-                    self._concluida = (self._s1, self._s2, self._maior_cur)
-                self._s1 = self._s2 = None
-                self._maior_cur = None
-            elif anterior == 0 and setor == 1 and cur is not None and no_setor is not None:
-                self._s1 = round(cur - no_setor, 3)
-            elif anterior == 1 and setor == 2 and self._s1 is not None and cur is not None and no_setor is not None:
-                self._s2 = round(cur - no_setor - self._s1, 3)
-            else:
-                self._s1 = self._s2 = None
+        zerou = cur is not None and self._ultimo_cur is not None and cur < self._ultimo_cur - 1.0
+        if (anterior == 2 and setor == 0) or (zerou and anterior == 2):
+            self._fechar_volta()
+        elif zerou:
+            self._inicio_setor = {}
+            self._maior_cur = None
+        if setor in (1, 2) and setor not in self._inicio_setor and cur is not None and no_setor is not None:
+            inicio = round(cur - no_setor, 3)
+            if inicio > 0 and (setor == 1 or self._inicio_setor.get(1, 0) < inicio):
+                self._inicio_setor[setor] = inicio
         self._sector = setor
-        if cur is not None and (self._maior_cur is None or cur > self._maior_cur):
-            self._maior_cur = cur
+        if cur is not None:
+            self._ultimo_cur = cur
+            if self._maior_cur is None or cur > self._maior_cur:
+                self._maior_cur = cur
         self._fechar_setores()
+
+    def _fechar_volta(self) -> None:
+        """Passagem pela linha: guarda S1, S2 e o maior cronometro da volta
+        (para casar com o tempo oficial, que pode chegar antes ou depois) e
+        comeca a volta seguinte do zero."""
+        inicio_s2, inicio_s3 = self._inicio_setor.get(1), self._inicio_setor.get(2)
+        if inicio_s2 is not None and inicio_s3 is not None and self._maior_cur is not None:
+            self._concluida = (inicio_s2, round(inicio_s3 - inicio_s2, 3), self._maior_cur)
+        self._inicio_setor = {}
+        self._maior_cur = None
 
     def _fechar_setores(self) -> None:
         if self._concluida is None or not self.last_lap_s:
+            return
+        # Setores ja' fechados para este tempo de volta nao sao sobrescritos: um
+        # reinicio no meio do S3 parece uma passagem pela linha e nao pode
+        # trocar os setores certos da volta anterior.
+        if self.last_lap_sectors_for == self.last_lap_s:
+            self._concluida = None
             return
         s1, s2, estimativa = self._concluida
         # So' fecha com o tempo DESTA volta: um last_lap_s antigo ainda em vigor
