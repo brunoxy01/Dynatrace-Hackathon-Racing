@@ -21,6 +21,9 @@ export interface Telemetry {
   // Só nas linhas de volta concluída (consulta LAPS): velocidade máxima DENTRO
   // da volta, calculada no Grail.
   top_speed_kmh?: number | null;
+  // Só nas linhas de volta concluída: menor cronômetro entre os quadros que
+  // carregam o tempo dela. ~0 s numa volta real; alto num reanúncio.
+  lap_start_s?: number | null;
   // Setores da volta concluída (s), enviados pelo coletor a partir da v1.10.5.
   last_lap_s1?: number | null;
   last_lap_s2?: number | null;
@@ -64,7 +67,7 @@ export function parseEvents(input: unknown): Telemetry[] {
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
       lap_invalidated:typeof r.lap_invalidated === 'boolean' ? r.lap_invalidated : null, last_lap_s:num('last_lap_s'), lap_number:num('lap_number'), lap_race_position:num('lap_race_position'), top_speed_kmh:speed('top_speed_kmh'),
-      last_lap_s1:num('last_lap_s1'), last_lap_s2:num('last_lap_s2'), last_lap_s3:num('last_lap_s3')}];
+      last_lap_s1:num('last_lap_s1'), last_lap_s2:num('last_lap_s2'), last_lap_s3:num('last_lap_s3'), lap_start_s:num('lap_start_s')}];
   });
 }
 // A mesma amostra pode chegar ao Grail por dois caminhos: bizevents (API direta)
@@ -203,16 +206,32 @@ export function trails(events: Telemetry[]): Telemetry[][] {
 // registram tempo — e o valor ainda sobrevive ao reinício do coletor, porque
 // quem lembra é o jogo. Agrupar no Grail por sessão + tempo colapsa as
 // repetições dentro de uma sessão; aqui some a repetição ENTRE sessões do mesmo
-// piloto no mesmo simulador, que é a mesma volta física relistada. Fica a
-// ocorrência mais antiga: o instante em que a volta de fato fechou.
+// piloto no mesmo simulador, que é a mesma volta física relistada.
+//
+// Mesmo tempo NÃO basta para dizer que é a mesma volta: dois 1:41.120 do mesmo
+// piloto em dias diferentes são duas voltas. O que separa é como o grupo de
+// quadros começa (`lap_start_s`, o menor cronômetro do grupo): numa volta
+// concluída de verdade, quem carrega o tempo dela são os quadros da volta
+// seguinte, que começa na linha com o cronômetro em ~0 s; num reanúncio, o
+// coletor reiniciado pegou o carro no meio de uma volta. Ficam todas as voltas
+// reais; o reanúncio só aparece se a volta real não estiver no período. Linhas
+// sem essa informação (dados antigos) seguem a regra anterior: fica a
+// ocorrência mais antiga.
+export const REANNOUNCE_MIN_CLOCK_S = 3;
 export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
-  const primeira = new Map<string, Telemetry>();
+  const grupos = new Map<string, Telemetry[]>();
   for (const lap of laps) {
     const key = JSON.stringify([lap['rig.id'], lap.driver_name, lap.last_lap_s]);
-    const atual = primeira.get(key);
-    if (!atual || Date.parse(lap.timestamp) < Date.parse(atual.timestamp)) primeira.set(key, lap);
+    const grupo = grupos.get(key);
+    if (grupo) grupo.push(lap); else grupos.set(key, [lap]);
   }
-  return [...primeira.values()];
+  const voltas: Telemetry[] = [];
+  for (const grupo of grupos.values()) {
+    const reais = grupo.filter(l => finite(l.lap_start_s) && l.lap_start_s <= REANNOUNCE_MIN_CLOCK_S);
+    if (reais.length) voltas.push(...reais);
+    else voltas.push(grupo.reduce((a, b) => Date.parse(b.timestamp) < Date.parse(a.timestamp) ? b : a));
+  }
+  return voltas;
 }
 
 // O ranking do evento é por VOLTA, não por piloto: um piloto rápido pode ocupar
@@ -372,8 +391,9 @@ export function lapCompletions(trail: Telemetry[]): Telemetry[] {
         let j = i;
         while (j < trail.length && trail[j].last_lap_s === v.last_lap_s && !finite(trail[j].last_lap_s1)) j++;
         const comSetores = j < trail.length && trail[j].last_lap_s === v.last_lap_s ? trail[j] : v;
+        // Detectada pela virada do cronômetro na linha: é volta real (lap_start_s 0).
         voltas.push({...v, last_lap_s1: comSetores.last_lap_s1, last_lap_s2: comSetores.last_lap_s2, last_lap_s3: comSetores.last_lap_s3,
-          top_speed_kmh: topSpeedOf(trail.slice(inicio, i))});
+          top_speed_kmh: topSpeedOf(trail.slice(inicio, i)), lap_start_s: 0});
       }
       inicio = i;
     }

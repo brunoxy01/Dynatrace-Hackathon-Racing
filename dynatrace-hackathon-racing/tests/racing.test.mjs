@@ -752,3 +752,19 @@ test('a lap entering the leaderboard takes its sectors from the first frame that
   assert.equal(volta.timestamp, quadros[fim].timestamp);
   assert.deepEqual([volta.last_lap_s1, volta.last_lap_s2, volta.last_lap_s3], [25.1, 52.0, 24.84]);
 });
+
+test('two real laps with the same time on different days both count', () => {
+  const ontem = {...sample, 'rig.id':'rig-01', driver_name:'Plinio Moreira', 'session.id':'s-ontem', last_lap_s:101.12, lap_start_s:0.04, timestamp:'2026-10-20T19:05:46Z'};
+  const hoje = {...ontem, 'session.id':'s-hoje', lap_start_s:0.05, timestamp:'2026-10-21T22:40:10Z'};
+  const unicas = dedupeLaps([ontem, hoje]);
+  assert.equal(unicas.length, 2);
+  assert.equal(lapsByTime(unicas).length, 2, 'as duas entram na classificação');
+});
+test('a re-announced lap time after a collector restart still counts once', () => {
+  const real = {...sample, 'rig.id':'rig-01', driver_name:'Plinio Moreira', 'session.id':'s1', last_lap_s:101.12, lap_start_s:0.05, timestamp:'2026-10-21T22:40:10Z'};
+  // Coletor reiniciado 3 min depois, com o carro no meio da volta (cronômetro em 47 s).
+  const reanuncio = {...real, 'session.id':'s2', lap_start_s:47.3, timestamp:'2026-10-21T22:43:02Z'};
+  assert.deepEqual(dedupeLaps([real, reanuncio]), [real]);
+  // Se a volta real ficou fora do período, o reanúncio é o que sobra dela.
+  assert.deepEqual(dedupeLaps([reanuncio]), [reanuncio]);
+});

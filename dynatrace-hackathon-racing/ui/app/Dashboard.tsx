@@ -93,6 +93,8 @@ const QUERY = `fetch bizevents
 // fechar, os primeiros quadros da sessão nova ainda anunciam o último tempo com
 // o contador de voltas zerado, e caem neste mesmo grupo. Com min() a volta
 // passava a ser "a volta 0" e o lookup da velocidade máxima não achava nada.
+// lap_start_s (menor cronômetro do grupo) separa volta real de reanúncio do
+// mesmo tempo depois de um coletor reiniciado — ver dedupeLaps.
 // Setores: o coletor já manda S1/S2/S3 da volta em `last_lap_s` nos mesmos
 // quadros, então vêm do próprio agrupamento. max() e não takeAny(): ignora os
 // quadros sem setor (coletor que entrou no meio da volta, ou anteriores à v1.10.5).
@@ -108,7 +110,8 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     car_name = takeAny(car_name),
     last_lap_s1 = max(last_lap_s1),
     last_lap_s2 = max(last_lap_s2),
-    last_lap_s3 = max(last_lap_s3)
+    last_lap_s3 = max(last_lap_s3),
+    lap_start_s = min(lap_time_s)
   }, by: {\`rig.id\`, \`session.id\`, last_lap_s}
 | fieldsAdd lap_key = concat(\`rig.id\`, "|", \`session.id\`, "|", toString(toLong(lap_number) - 1))
 | lookup [
