@@ -526,24 +526,24 @@ export const Dashboard = () => {
   const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{piloto?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
 
   // Um cartão por piloto com telemetria fresca, não só o mais recente — com
-  // 2+ simuladores ativos ao mesmo tempo, a coluna empilha um cartão completo
-  // (ficha + telemetria ao vivo) por piloto, sem limite de quantidade.
-  const painelDoPiloto = (subtitulo: string) => <div className="driver-column">
-    {mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1
-      ? pilotosAoVivo.map(piloto => {
-          const trilha = trilhas.find(t => driverKey(t[0]) === piloto.key);
-          return <div className="driver-column" key={piloto.key}>
-            {cartaoDoPiloto(piloto, subtitulo)}
-            <TelemetriaAoVivo liveClock={liveClock} trail={trilha} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? piloto, tempo === undefined ? piloto.lap_time_s : tempo, concluida)}/>
-          </div>;
-        })
-      : <>
-        {cartaoDoPiloto(focus, subtitulo)}
-        {mode === 'live'
-          ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo, concluida)}/>
-          : secaoTelemetria(focus, focus?.lap_time_s)}
-      </>}
-  </div>;
+  // 2+ simuladores ativos ao mesmo tempo, cada piloto ganha a própria COLUNA,
+  // lado a lado com o mapa (não empilhadas uma embaixo da outra). Cada
+  // <div className="driver-column"> aqui é filho direto do .hero-grid, que
+  // troca pra layout flex-wrap quando há mais de uma (ver hero-grid-multi).
+  const painelDoPiloto = (subtitulo: string) => mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1
+    ? <>{pilotosAoVivo.map(piloto => {
+        const trilha = trilhas.find(t => driverKey(t[0]) === piloto.key);
+        return <div className="driver-column" key={piloto.key}>
+          {cartaoDoPiloto(piloto, subtitulo)}
+          <TelemetriaAoVivo liveClock={liveClock} trail={trilha} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? piloto, tempo === undefined ? piloto.lap_time_s : tempo, concluida)}/>
+        </div>;
+      })}</>
+    : <div className="driver-column">
+      {cartaoDoPiloto(focus, subtitulo)}
+      {mode === 'live'
+        ? <TelemetriaAoVivo liveClock={liveClock} trail={focusTrail} render={(amostra, tempo, concluida) => secaoTelemetria(amostra ?? focus, tempo === undefined ? focus?.lap_time_s : tempo, concluida)}/>
+        : secaoTelemetria(focus, focus?.lap_time_s)}
+    </div>;
 
   // Por ora, pódio de pilotos em vez de empresas (pedido explícito) - mesma
   // estrutura visual, só troca a fonte do ranking.
@@ -566,7 +566,7 @@ export const Dashboard = () => {
     {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos chegou nos {LIVE_WINDOW_LABEL}. Confira se o rig está enviando. A classificação abaixo segue o período selecionado.</div>}
     {mode === 'live' && !live.error && liveOtel.error && <div className="notice" role="status">A fonte OTel (logs do collector do rig) não respondeu: {liveOtel.error.message}. O painel segue mostrando os business events.</div>}
     {mode === 'live' && events.length >= 10000 && <div className="notice">Exibindo os 10.000 eventos mais recentes. O mapa e os indicadores representam essa amostra.</div>}
-    <div className="hero-grid">
+    <div className={`hero-grid${mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1 ? ' hero-grid-multi' : ''}`}>
       {mapa('Pista cinza · aguardando eventos', mode === 'stream' && stream.running ? <progress aria-label="Progresso da simulação" max={stream.total} value={events.length}/> : undefined)}
       {painelDoPiloto(mode === 'live' ? `Última leitura · ${LIVE_WINDOW_LABEL}` : 'Dados de demonstração')}
     </div>
