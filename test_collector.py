@@ -1,4 +1,5 @@
 import json
+import struct
 import threading
 import time
 from datetime import datetime
@@ -12,6 +13,66 @@ from ams2_collector import (
     build_otlp_payload,
     post_otlp,
 )
+from ams2_protocol import decode_header
+
+
+def _anunciar(estado, tempo):
+    """O jogo anuncia um tempo de volta novo (pacote 7)."""
+    estado.last_lap_s = tempo
+    estado.anunciar_tempo(tempo)
+
+
+def _pacotes_da_captura():
+    with open("captura.txt", encoding="utf-8") as f:
+        return [bytes.fromhex(l.rstrip("\n").split("\t")[3]) for l in f if l.count("\t") == 3]
+
+
+def _participante(raw):
+    idx = struct.unpack_from("<H", raw, 1057)[0]
+    off = 33 + idx * 32
+    return off, raw[off + 15] & 7, raw[off + 21]
+
+
+def _corrida(tempos):
+    """Corrida de varias voltas feita com a volta real completa da captura
+    (104,015 s) repetida: o numero da volta sobe e, na passagem pela linha, o
+    jogo anuncia o tempo oficial da volta anterior - como no AMS2."""
+    pacotes = _pacotes_da_captura()
+    cruzamentos, anterior = [], None
+    for i, raw in enumerate(pacotes):
+        if decode_header(raw).packet_type == 3:
+            _, setor, _ = _participante(raw)
+            if anterior == 2 and setor == 0:
+                cruzamentos.append(i)
+            anterior = setor
+    inicio, fim = cruzamentos[0], cruzamentos[1]
+    volta = pacotes[inicio:fim]
+    modelo7 = next(raw for raw in volta if decode_header(raw).packet_type == 7)
+
+    def com_ultimo(raw, valor):
+        b = bytearray(raw)
+        struct.pack_into("<f", b, 20, valor)  # sLastLapTime do participante 0
+        return bytes(b)
+
+    corrida = list(pacotes[:inicio])
+    for k in range(len(tempos) + 1):
+        anuncio = tempos[k - 1] if k > 0 else None
+        anunciado = False
+        for raw in (volta if k < len(tempos) else pacotes[fim:fim + 400]):
+            tipo = decode_header(raw).packet_type
+            if tipo == 3:
+                b = bytearray(raw)
+                off, _, lap = _participante(raw)
+                b[off + 21] = lap + k
+                corrida.append(bytes(b))
+                if anuncio is not None and not anunciado:
+                    corrida.append(com_ultimo(modelo7, anuncio))
+                    anunciado = True
+            elif tipo == 7:
+                corrida.append(com_ultimo(raw, anuncio) if anuncio is not None else raw)
+            else:
+                corrida.append(raw)
+    return corrida
 
 
 class OtlpPayloadTests(unittest.TestCase):
@@ -132,8 +193,7 @@ class SectorOrderTests(unittest.TestCase):
                                         "lap_time_s": cronometro, "sector_time_s": no_setor})
 
         def oficial():
-            estado.last_lap_s = 101.94
-            estado._fechar_setores()
+            _anunciar(estado, 101.94)
 
         timings(3, 0, 0.05, 0.05)
         timings(3, 0, 25.0, 25.0)
@@ -173,8 +233,7 @@ class SectorOrderTests(unittest.TestCase):
         for volta, setor, cron, no_setor in [(3, 0, 0.05, 0.05), (3, 0, 25.0, 25.0), (3, 1, 25.15, None), (3, 1, 25.2, 0.1),
                                              (3, 1, 77.0, 51.9), (3, 2, 77.15, None), (3, 2, 77.2, 0.1), (3, 2, 101.9, 24.8), (4, 0, 0.05, 0.05)]:
             estado._acompanhar_setores({"lap_number": volta, "sector": setor, "lap_time_s": cron, "sector_time_s": no_setor})
-        estado.last_lap_s = 101.94
-        estado._fechar_setores()
+        _anunciar(estado, 101.94)
         self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
 
     def test_sector_flicker_near_a_boundary_keeps_the_lap(self):
@@ -190,15 +249,49 @@ class SectorOrderTests(unittest.TestCase):
 
         for pacote in [(3, 0, 0.05, 0.05), (3, 1, 25.15, 0.05), (3, 2, 77.15, 0.05), (3, 2, 101.9, 24.8), (4, 0, 0.05, 0.05)]:
             timings(*pacote)
-        estado.last_lap_s = 101.94
-        estado._fechar_setores()
+        _anunciar(estado, 101.94)
         self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
         # Volta seguinte: reinicio em S3 com o cronometro em 101,5 s (perto do
-        # tempo anterior) e volta para S1 com o cronometro zerado.
+        # tempo anterior) e volta para S1 com o cronometro zerado. O jogo nao
+        # anuncia tempo novo: os setores da volta anterior ficam intactos.
         for pacote in [(4, 1, 26.0, 0.1), (4, 2, 80.0, 0.1), (4, 2, 101.5, 21.6), (4, 0, 0.05, 0.05)]:
             timings(*pacote)
-        estado._fechar_setores()
         self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
+
+    def test_consistent_laps_do_not_take_the_previous_lap_time(self):
+        # A causa dos setores faltando: na linha o jogo ainda mostra o tempo da
+        # volta ANTERIOR (101,94); com voltas parecidas ele era aceito como o
+        # desta volta. O tempo certo (101,90) so' e' anunciado depois.
+        from ams2_protocol import SessionState
+        estado = SessionState()
+
+        def timings(volta, setor, cron, no_setor):
+            estado._acompanhar_setores({"lap_number": volta, "sector": setor, "lap_time_s": cron, "sector_time_s": no_setor})
+
+        for pacote in [(3, 0, 0.05, 0.05), (3, 1, 25.15, 0.05), (3, 2, 77.15, 0.05), (3, 2, 101.9, 24.8), (4, 0, 0.05, 0.05)]:
+            timings(*pacote)
+        _anunciar(estado, 101.94)
+        for pacote in [(4, 1, 25.2, 0.05), (4, 2, 77.1, 0.05), (4, 2, 101.85, 24.8), (5, 0, 0.05, 0.05)]:
+            timings(*pacote)
+        # Antes do anuncio novo, os setores da volta 1 seguem intactos.
+        self.assertEqual((25.1, 52.0, 24.84), estado.sectors_of_last_lap())
+        _anunciar(estado, 101.90)
+        self.assertEqual((25.15, 51.9, 24.85), estado.sectors_of_last_lap())
+
+    def test_every_lap_of_a_consistent_race_gets_its_sectors(self):
+        # Regressao do defeito visto nos rigs (22/10): so' a primeira volta de
+        # cada sessao registrava setores. Quatro voltas a centesimos uma da outra.
+        tempos = [104.015, 104.062, 103.987, 104.031]
+        coletor = Collector("rig", "Rig", "s", "real")
+        setores = {}
+        for raw in _corrida(tempos):
+            evento = coletor.handle_packet(raw)
+            if evento and evento["last_lap_s"] in tempos and evento["last_lap_s"] not in setores:
+                setores[evento["last_lap_s"]] = (evento["last_lap_s1"], evento["last_lap_s2"], evento["last_lap_s3"])
+        for tempo in tempos:
+            s1, s2, s3 = setores[tempo]
+            self.assertIsNotNone(s1, f"volta de {tempo} sem setores")
+            self.assertAlmostEqual(tempo, s1 + s2 + s3, places=3)
 
     def test_out_of_order_sector_jump_drops_the_lap_instead_of_inventing(self):
         # Reinicio/box no meio da volta: S3 -> S2 -> S3 -> linha. Sem setores.
