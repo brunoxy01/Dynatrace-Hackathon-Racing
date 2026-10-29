@@ -68,10 +68,16 @@ test('a lap time relisted across laps and sessions counts once', () => {
   // Fica o instante em que a volta fechou de verdade, não a relistagem tardia.
   assert.equal(unicas.find(l => l.last_lap_s === 143.067).timestamp, '2026-09-25T11:07:41Z');
 });
-test('same lap time by different drivers or rigs stays separate', () => {
+test('same lap time by different drivers or companies stays separate', () => {
   const outro = {...registradas[0], driver_name:'Outro'};
-  const outroRig = {...registradas[0], 'rig.id':'rig-02'};
-  assert.equal(dedupeLaps([registradas[0], outro, outroRig]).length, 3);
+  const outraEmpresa = {...registradas[0], company_name:'Itau'};
+  assert.equal(dedupeLaps([registradas[0], outro, outraEmpresa]).length, 3);
+});
+test('the same driver relisted by another simulator is still one lap', () => {
+  // O piloto é nome + empresa; o simulador não entra. Maiúsculas e espaços
+  // nas pontas também não mudam quem é.
+  const outroSimulador = {...registradas[0], 'rig.id':'sim-b', 'session.id':'s9', driver_name:' PlinioAugusto01 '};
+  assert.equal(dedupeLaps([registradas[0], outroSimulador]).length, 1);
 });
 test('ranking is one row per lap, fastest first, not one per driver', () => {
   const rivais = [...registradas, {...sample, 'rig.id':'rig-02', driver_name:'Ana', last_lap_s:95.1, timestamp:'2026-09-25T11:05:00Z'}];
@@ -405,19 +411,39 @@ test('a lap recorded under an earlier session still counts as the current driver
   assert.equal(comResultado[0].bestSource, 'completed');
 });
 
-test('matching by driver name never merges two different rigs or a renamed driver', () => {
-  const doisRigs = summarize([
-    {...sample, 'rig.id':'rig-01', 'session.id':'nova-1'},
-    {...sample, 'rig.id':'rig-02', 'session.id':'nova-2'},
+test('matching a driver across sessions uses name + company, never the simulator', () => {
+  const pilotos = summarize([
+    {...sample, 'rig.id':'sim-a', 'session.id':'nova-1', driver_name:'Ana', company_name:'Dynatrace'},
+    {...sample, 'rig.id':'sim-b', 'session.id':'nova-2', driver_name:'Ana', company_name:'Itau'},
   ]);
-  const comVoltas = applyLapResults(doisRigs, [
-    {...sample, 'rig.id':'rig-01', 'session.id':'velha-1', last_lap_s:90},
-    // mesmo rig.id, nome diferente: nao e' o mesmo piloto, nao deve casar
-    {...sample, 'rig.id':'rig-02', 'session.id':'velha-2', driver_name:'Outro', last_lap_s:70},
+  const comVoltas = applyLapResults(pilotos, [
+    // a mesma pessoa, numa sessao antiga em OUTRO simulador: casa
+    {...sample, 'rig.id':'sim-b', 'session.id':'velha-1', driver_name:'Ana', company_name:'Dynatrace', last_lap_s:90},
+    // mesmo simulador e mesmo nome, outra empresa: outra pessoa, nao casa
+    {...sample, 'rig.id':'sim-b', 'session.id':'velha-2', driver_name:'Ana', company_name:'Outra', last_lap_s:70},
   ]);
-  const porRig = Object.fromEntries(comVoltas.map(d => [d['rig.id'], d.best]));
-  assert.equal(porRig['rig-01'], 90);
-  assert.equal(porRig['rig-02'], null);
+  const porEmpresa = Object.fromEntries(comVoltas.map(d => [d.company_name, d.best]));
+  assert.equal(porEmpresa['Dynatrace'], 90);
+  assert.equal(porEmpresa['Itau'], null);
+});
+
+test('podium keeps two drivers with the same name from different companies apart', () => {
+  const voltas = lapsByTime([
+    {...sample, driver_name:'Bruno', company_name:'Dynatrace', last_lap_s:100},
+    {...sample, driver_name:'Bruno', company_name:'Itau', last_lap_s:101},
+    {...sample, driver_name:'bruno ', company_name:'dynatrace', last_lap_s:99},
+  ]);
+  assert.deepEqual(driverPodium(voltas, 3).map(l => [l.company_name, l.last_lap_s]), [['dynatrace', 99], ['Itau', 101]]);
+});
+
+test('the company is read from the event and filled in like the name', () => {
+  assert.equal(parseEvents([{...sample, company_name:' Dynatrace '}])[0].company_name, 'Dynatrace');
+  assert.equal(parseEvents([sample])[0].company_name, null);
+  const [inicio] = backfillIdentity([
+    {...sample, driver_name:null, company_name:null},
+    {...sample, timestamp:'2026-09-19T00:00:01Z', company_name:'Dynatrace'},
+  ]);
+  assert.equal(inicio.company_name, 'Dynatrace');
 });
 
 test('trackHeat bridges a short gap flanked by real data on both sides', () => {

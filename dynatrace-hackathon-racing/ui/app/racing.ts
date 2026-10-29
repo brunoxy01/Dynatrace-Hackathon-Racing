@@ -1,7 +1,11 @@
 export interface Telemetry {
   timestamp: string;
   driver_name: string | null;
+  // O piloto é nome + empresa (informados no painel do rig ou no racing.ini).
+  company_name?: string | null;
   car_name: string | null;
+  // Simulador de onde veio a amostra, gerado sozinho pelo coletor. Só separa os
+  // streams de 1, 2 ou n simuladores; não aparece em tela nenhuma.
   'rig.id': string;
   'session.id': string;
   'sample.id'?: string | null;
@@ -62,7 +66,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     // calor) desenhavam esse placeholder como se fosse telemetria de verdade.
     const posX = num('pos_x'), posY = num('pos_y');
     const semPosicaoReal = posX === 0 && posY === 0;
-    return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
+    return [{timestamp:r.timestamp, driver_name:str('driver_name'), company_name:str('company_name')?.trim() || null, car_name:str('car_name'),
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
@@ -94,7 +98,7 @@ export function mergeTelemetry(...sources: Telemetry[][]): Telemetry[] {
 // nunca cai nessa janela. Sem isto o pódio fica vazio mesmo com voltas feitas.
 export function applyLapResults(drivers: Driver[], laps: Telemetry[]): Driver[] {
   const bySession = new Map<string, number>();
-  // Mesmo rig + mesmo nome de piloto sobrevive a um reinício de sessão. Sem
+  // O mesmo piloto (nome + empresa) sobrevive a um reinício de sessão. Sem
   // isto, uma volta cuja linha representativa (após o dedupeLaps) ficou numa
   // sessão ANTERIOR nunca encontrava o piloto que está ao vivo agora numa
   // sessão nova — e "melhor volta registrada" e "piloto em destaque" ficavam
@@ -106,7 +110,7 @@ export function applyLapResults(drivers: Driver[], laps: Telemetry[]): Driver[] 
     const atualSessao = bySession.get(sessionKey);
     if (atualSessao === undefined || lap.last_lap_s < atualSessao) bySession.set(sessionKey, lap.last_lap_s);
     if (lap.driver_name) {
-      const nameKey = JSON.stringify([lap['rig.id'], lap.driver_name]);
+      const nameKey = pilotoKey(lap);
       const atualPiloto = byDriver.get(nameKey);
       if (atualPiloto === undefined || lap.last_lap_s < atualPiloto) byDriver.set(nameKey, lap.last_lap_s);
     }
@@ -114,7 +118,7 @@ export function applyLapResults(drivers: Driver[], laps: Telemetry[]): Driver[] 
   if (!bySession.size && !byDriver.size) return drivers;
   return drivers.map(driver => {
     const porSessao = bySession.get(driver.key);
-    const porPiloto = driver.driver_name ? byDriver.get(JSON.stringify([driver['rig.id'], driver.driver_name])) : undefined;
+    const porPiloto = driver.driver_name ? byDriver.get(pilotoKey(driver)) : undefined;
     const registrada = porSessao === undefined ? porPiloto : porPiloto === undefined ? porSessao : Math.min(porSessao, porPiloto);
     if (registrada === undefined) return driver;
     // O tempo informado pelo simulador continua tendo prioridade quando existe.
@@ -142,6 +146,13 @@ export const number = (v: number | null | undefined, digits = 0) => finite(v) ? 
 // 27s depois do primeiro quadro de telemetria, e ficam nulos até lá. Com eles na
 // chave, cada sessão virava dois pilotos — e dois carros parados no mapa.
 export const driverKey = (r: Telemetry) => JSON.stringify([r['rig.id'], r['session.id']]);
+// Identidade do PILOTO (pessoa): nome + empresa, sem diferenciar maiúsculas e
+// espaços nas pontas. É o que junta as voltas de uma pessoa entre sessões e
+// simuladores (pódio, melhor volta, voltas repetidas). O simulador não entra.
+const normalizar = (texto: string | null | undefined) => (texto ?? '').trim().toLocaleLowerCase('pt-BR');
+export const pilotoKey = (r: Telemetry) => JSON.stringify([normalizar(r.driver_name), normalizar(r.company_name)]);
+// Como o piloto aparece onde só cabe um texto: "Nome (Empresa)".
+export const rotuloPiloto = (r: Telemetry) => r.driver_name ? (r.company_name ? `${r.driver_name} (${r.company_name})` : r.driver_name) : null;
 export interface Driver extends Telemetry { key: string; best: number | null; peak: number; bestSource: 'simulator' | 'completed' | null; }
 export function summarize(events: Telemetry[]): Driver[] {
   const drivers = new Map<string, Driver>();
@@ -179,19 +190,21 @@ export function activeDrivers(drivers: Driver[], now: number, windowMs: number):
 // fique em "Aguardando piloto" no começo de toda sessão (e nos primeiros
 // segundos do replay da captura, onde o piloto é conhecido desde sempre).
 export function backfillIdentity(events: Telemetry[]): Telemetry[] {
-  const known = new Map<string, {driver_name: string | null; car_name: string | null}>();
+  const known = new Map<string, {driver_name: string | null; car_name: string | null; company_name: string | null}>();
   for (const event of events) {
     const entry = known.get(driverKey(event));
-    if (!entry) known.set(driverKey(event), {driver_name: event.driver_name, car_name: event.car_name});
+    if (!entry) known.set(driverKey(event), {driver_name: event.driver_name, car_name: event.car_name, company_name: event.company_name ?? null});
     else {
       entry.driver_name ??= event.driver_name;
       entry.car_name ??= event.car_name;
+      entry.company_name ??= event.company_name ?? null;
     }
   }
   return events.map(event => {
     if (event.driver_name && event.car_name) return event;
     const entry = known.get(driverKey(event));
-    return entry ? {...event, driver_name: event.driver_name ?? entry.driver_name, car_name: event.car_name ?? entry.car_name} : event;
+    return entry ? {...event, driver_name: event.driver_name ?? entry.driver_name, car_name: event.car_name ?? entry.car_name,
+      company_name: event.company_name ?? entry.company_name} : event;
   });
 }
 
@@ -216,7 +229,7 @@ export function trails(events: Telemetry[]): Telemetry[][] {
 // registram tempo — e o valor ainda sobrevive ao reinício do coletor, porque
 // quem lembra é o jogo. Agrupar no Grail por sessão + tempo colapsa as
 // repetições dentro de uma sessão; aqui some a repetição ENTRE sessões do mesmo
-// piloto no mesmo simulador, que é a mesma volta física relistada.
+// piloto (nome + empresa), que é a mesma volta física relistada.
 //
 // Mesmo tempo NÃO basta para dizer que é a mesma volta: dois 1:41.120 do mesmo
 // piloto em dias diferentes são duas voltas. O que separa é como o grupo de
@@ -228,14 +241,14 @@ export function trails(events: Telemetry[]): Telemetry[][] {
 // sem essa informação (dados antigos) seguem a regra anterior: fica a
 // ocorrência mais antiga.
 export const REANNOUNCE_MIN_CLOCK_S = 3;
-// Duas linhas reais do mesmo piloto, simulador e tempo a menos de 1 minuto uma
-// da outra são a MESMA volta (a inserida na hora pelo Ao vivo e a que o Grail
+// Duas linhas reais do mesmo piloto e tempo a menos de 1 minuto uma da outra
+// são a MESMA volta (a inserida na hora pelo Ao vivo e a que o Grail
 // devolveu): ninguém fecha duas voltas idênticas em menos de um minuto.
 const MESMA_VOLTA_MS = 60000;
 export function dedupeLaps(laps: Telemetry[]): Telemetry[] {
   const grupos = new Map<string, Telemetry[]>();
   for (const lap of laps) {
-    const key = JSON.stringify([lap['rig.id'], lap.driver_name, lap.last_lap_s]);
+    const key = JSON.stringify([pilotoKey(lap), lap.last_lap_s]);
     const grupo = grupos.get(key);
     if (grupo) grupo.push(lap); else grupos.set(key, [lap]);
   }
@@ -263,15 +276,15 @@ export function lapsByTime(laps: Telemetry[]): Telemetry[] {
     .sort((a,b) => a.last_lap_s! - b.last_lap_s!);
 }
 
-// Pódio de pilotos: a volta mais rápida de cada um, agrupado por nome (não
-// por driverKey) — um piloto que trocou de simulador ou reiniciou a sessão
-// entre voltas continua sendo UMA pessoa só no pódio, igual ao lapConsistency
-// já faz. Recebe as voltas já ordenadas por tempo, então a primeira
-// ocorrência de cada piloto já é a melhor dele.
+// Pódio de pilotos: a volta mais rápida de cada um, agrupado por piloto (nome +
+// empresa, não por driverKey) — um piloto que trocou de simulador ou reiniciou
+// a sessão entre voltas continua sendo UMA pessoa só no pódio. Recebe as
+// voltas já ordenadas por tempo, então a primeira ocorrência de cada piloto já
+// é a melhor dele.
 export function driverPodium(lapsSortedByTime: Telemetry[], size: number): Telemetry[] {
   const melhor = new Map<string, Telemetry>();
   for (const lap of lapsSortedByTime) {
-    if (lap.driver_name && !melhor.has(lap.driver_name)) melhor.set(lap.driver_name, lap);
+    if (lap.driver_name && !melhor.has(pilotoKey(lap))) melhor.set(pilotoKey(lap), lap);
   }
   return [...melhor.values()].slice(0, size);
 }
@@ -762,11 +775,12 @@ function hotspotsByDriver(events: Telemetry[], nodes: number[][], metric: 'brake
   const byDriver = new Map<string, { sum: number; count: number }[]>();
   for (const e of events) {
     const value = e[metric];
-    if (!e.driver_name || !finite(e.pos_x) || !finite(e.pos_y) || !finite(value)) continue;
+    const piloto = rotuloPiloto(e);
+    if (!piloto || !finite(e.pos_x) || !finite(e.pos_y) || !finite(value)) continue;
     const i = nearestNode(e.pos_x, e.pos_y, nodes);
     if (i < 0) continue;
-    let bins = byDriver.get(e.driver_name);
-    if (!bins) { bins = nodes.map(() => ({ sum: 0, count: 0 })); byDriver.set(e.driver_name, bins); }
+    let bins = byDriver.get(piloto);
+    if (!bins) { bins = nodes.map(() => ({ sum: 0, count: 0 })); byDriver.set(piloto, bins); }
     bins[i].sum += value; bins[i].count++;
   }
   const result: DriverZone[] = [];
@@ -794,9 +808,10 @@ export interface LapConsistency { driverName: string; stdDevSeconds: number; lap
 export function lapConsistency(laps: Telemetry[]): LapConsistency[] {
   const byDriver = new Map<string, number[]>();
   for (const lap of laps) {
-    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0 || !lap.driver_name) continue;
-    const times = byDriver.get(lap.driver_name);
-    if (times) times.push(lap.last_lap_s); else byDriver.set(lap.driver_name, [lap.last_lap_s]);
+    const piloto = rotuloPiloto(lap);
+    if (!finite(lap.last_lap_s) || lap.last_lap_s <= 0 || !piloto) continue;
+    const times = byDriver.get(piloto);
+    if (times) times.push(lap.last_lap_s); else byDriver.set(piloto, [lap.last_lap_s]);
   }
   const result: LapConsistency[] = [];
   for (const [driverName, times] of byDriver) {
