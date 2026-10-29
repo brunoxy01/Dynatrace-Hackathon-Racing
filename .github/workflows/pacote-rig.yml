@@ -86,13 +86,14 @@ jobs:
           Set-Content -Encoding UTF8 pacote/motor/LEIAME.txt "Nao abra nada aqui. O HackathonRacing.exe da pasta de cima sobe estes arquivos sozinho." 
           @"
           [rig]
-          rig_id = rig-01
-          rig_name = Simulador 1
-          # Quem esta na cadeira. Preenchido aqui, vence o nome do perfil do
-          # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
-          # Pode trocar com o programa aberto: vale em ate' 1 segundo. Ou use
-          # o painel "Trocar piloto" (http://127.0.0.1:8765).
+          # Quem esta na cadeira. O piloto e' nome + empresa: o mesmo nome em
+          # empresas diferentes conta como duas pessoas. O nome preenchido
+          # aqui vence o do perfil do AMS2 (que e' o da conta Steam); em
+          # branco, o nome vem do jogo. Pode trocar com o programa aberto:
+          # vale em ate' 1 segundo. Ou use o painel "Trocar piloto"
+          # (http://127.0.0.1:8765). O simulador e' identificado sozinho.
           driver_name =
+          company_name =
           # Painel do navegador para trocar o piloto. 0 desliga; com
           # abrir_painel = nao ele sobe sem abrir o navegador sozinho.
           painel_porta = 8765

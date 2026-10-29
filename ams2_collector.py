@@ -29,16 +29,18 @@ Uso:
     export DT_ENV_URL="https://abc12345.live.dynatrace.com"
     export DT_API_TOKEN="dt0c01.SEU_TOKEN"
 
-    # dia do evento, um processo por simulador (rig_id diferente em cada um)
-    python3 ams2_collector.py --source udp --rig-id rig-01 --rig-name "Simulador 1"
+    # dia do evento, um processo por simulador. O simulador e' identificado
+    # sozinho (nao precisa configurar); o piloto e' nome + empresa.
+    python3 ams2_collector.py --source udp --driver-name "Bruno Lima" --company-name "Dynatrace"
 
     # hoje, usando a captura real que vocês fizeram
-    python3 ams2_collector.py --source replay --file captura.txt --rig-id rig-01 --loop --speed 4
+    python3 ams2_collector.py --source replay --file captura.txt --loop --speed 4
 """
 
 from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -48,6 +50,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -77,9 +80,39 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def id_do_simulador() -> str:
+    """Identificador deste PC, gerado sozinho - ninguem configura nada.
+
+    Serve so' para o app separar os dados de 1, 2 ou n simuladores rodando ao
+    mesmo tempo; nao aparece em tela nenhuma. E' estavel entre execucoes (o
+    mesmo PC gera sempre o mesmo) e anonimo (hash, nao o valor original).
+    Ordem: MachineGuid do Windows, machine-id do Linux, MAC + nome do PC."""
+    origem = None
+    try:
+        import winreg  # so' existe no Windows
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as chave:
+            origem = winreg.QueryValueEx(chave, "MachineGuid")[0]
+    except Exception:
+        pass
+    if not origem:
+        for caminho in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            try:
+                with open(caminho, encoding="ascii") as f:
+                    origem = f.read().strip()
+                if origem:
+                    break
+            except OSError:
+                pass
+    if not origem:
+        origem = f"{uuid.getnode():012x}-{socket.gethostname()}"
+    return "sim-" + hashlib.sha256(origem.encode("utf-8")).hexdigest()[:10]
+
+
 def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState,
                  telemetry: dict, timings: Optional[dict], source: str,
-                 sample_seq: int = 0, driver_name: Optional[str] = None) -> dict:
+                 sample_seq: int = 0, driver_name: Optional[str] = None,
+                 company_name: Optional[str] = None) -> dict:
     nome_do_jogo = (state.driver_name or "").strip() or None
     s1, s2, s3 = state.sectors_of_last_lap()
     return {
@@ -91,12 +124,13 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "event.provider": EVENT_PROVIDER,
         "source": source,  # "real" (udp/replay) ou "mock"
         "session.id": session_id,
+        # Simulador de onde veio a amostra, gerado sozinho (id_do_simulador). So'
+        # para o app separar os streams; nao aparece nas telas.
         "rig.id": rig_id,
-        "rig.name": rig_name,
-        # O piloto digita o proprio nome no perfil do AMS2 (conta Steam). A
-        # opcao --driver-name vence, para quando o rig ja' sabe quem esta na
-        # cadeira.
+        # O piloto e' nome + empresa, informados no racing.ini ou no painel. Sem
+        # nome, vale o do perfil do AMS2.
         "driver_name": driver_name or nome_do_jogo,
+        "company_name": company_name,
         "car_name": state.car_name,
         "acceleration_g": telemetry["acceleration_g"],
         "speed_kmh": telemetry["speed_kmh"],
@@ -260,12 +294,19 @@ def post_otlp(conexao: ConexaoHttp, events: list) -> None:
 
 class Collector:
     def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str,
-                 driver_name: Optional[str] = None, sample_hz: float = 0.0):
+                 driver_name: Optional[str] = None, sample_hz: float = 0.0,
+                 company_name: Optional[str] = None):
         self.state = SessionState()
+        # rig_id: simulador gerado sozinho (id_do_simulador). rig_name ficou so'
+        # por compatibilidade de assinatura; nao vai mais nas amostras.
         self.rig_id = rig_id
         self.rig_name = rig_name
-        self.driver_name = driver_name
+        self.driver_name = (driver_name or "").strip() or None
+        self.company_name = (company_name or "").strip() or None
         self.session_id = session_id
+        # Quadros de telemetria de OUTRO carro (camera nos boxes, menu, replay,
+        # outro participante da corrida online) descartados - aparece no console.
+        self.descartados_outro_carro = 0
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
         self._sample_seq = 0
@@ -282,24 +323,29 @@ class Collector:
         self._ocultar_ultima: Optional[float] = None
         self._ocultar_melhor: Optional[float] = None
 
-    def trocar_piloto(self, nome: Optional[str]) -> None:
-        """Passa a creditar as amostras a `nome` (None = nome do perfil do jogo).
+    def trocar_piloto(self, nome: Optional[str], empresa: Optional[str] = None) -> None:
+        """Passa a creditar as amostras ao piloto `nome` da `empresa` (nome None
+        = nome do perfil do jogo). O piloto e' a dupla nome + empresa: mudar
+        qualquer um dos dois e' outro piloto.
 
         Abre uma sessao nova, para as voltas de cada piloto nao se misturarem no
         app, e oculta o ultimo tempo e o recorde que o jogo ainda mostra - sao
         do piloto anterior. A volta em andamento fica com o piloto novo: e' quem
         esta' no carro quando ela fechar."""
         nome = (nome or "").strip() or None
+        empresa = (empresa or "").strip() or None
         with self._trava:
-            if nome == self.driver_name:
+            if (nome, empresa) == (self.driver_name, self.company_name):
                 return
             self._trocas += 1
             self.driver_name = nome
+            self.company_name = empresa
             self.session_id = f"live-{int(time.time())}-p{self._trocas}"
             self._sample_seq = 0
             self._ocultar_ultima = self.state.last_lap_s
             self._ocultar_melhor = self.state.best_lap_s
-        print(f"\n[i] Piloto agora: {nome or 'nome do perfil do jogo'} (sessao nova {self.session_id})", flush=True)
+        quem = nome or "nome do perfil do jogo"
+        print(f"\n[i] Piloto agora: {quem}{f' ({empresa})' if empresa else ''} - sessao nova {self.session_id}", flush=True)
 
     def piloto_em_uso(self) -> Optional[str]:
         """Nome que vai nas amostras: o do racing.ini/painel ou o do perfil do jogo."""
@@ -308,12 +354,12 @@ class Collector:
     def estado(self) -> dict:
         """Resumo para o painel de troca de piloto."""
         return {
-            "rig_id": self.rig_id,
-            "rig_name": self.rig_name,
             "versao": VERSAO,
             "piloto_em_uso": self.piloto_em_uso(),
+            "empresa_em_uso": self.company_name,
             "origem": "racing.ini" if self.driver_name else ("perfil do jogo" if self.state.driver_name else None),
             "sessao": self.session_id,
+            "descartados_outro_carro": self.descartados_outro_carro,
         }
 
     def _ocultar_herdados(self, evento: dict) -> None:
@@ -346,11 +392,20 @@ class Collector:
             self.state.ingest_participants(raw)
         elif header.packet_type == 3:
             self._last_timings = self.state.ingest_timings(raw)
+        elif header.packet_type == 4:
+            self.state.ingest_game_state(raw)
         elif header.packet_type == 7:
             self.state.ingest_time_stats(raw)
         elif header.packet_type == 8:
             self.state.ingest_vehicle_names(raw, len(raw))
         elif header.packet_type == 0:
+            telemetry = decode_telemetry(raw)
+            # So' a telemetria do carro do piloto deste PC: o AMS2 manda aqui o
+            # carro que a camera mostra (boxes, menu, replay, outro participante
+            # da corrida online), e isso misturava dois carros num piloto so'.
+            if not self.state.aceita_telemetria(telemetry["viewed_participant"]):
+                self.descartados_outro_carro += 1
+                return None
             # Os pacotes de estado (voltas, nomes) acima sao sempre processados;
             # so' a amostra de telemetria e' rarefeita.
             if self._intervalo:
@@ -358,13 +413,12 @@ class Collector:
                 if self._ultimo_envio is not None and instante - self._ultimo_envio < self._intervalo:
                     return None
                 self._ultimo_envio = instante
-            telemetry = decode_telemetry(raw)
             with self._trava:
                 self._sample_seq += 1
                 evento = build_event(
                     self.rig_id, self.rig_name, self.session_id, self.state,
                     telemetry, self._last_timings, self.source_label, self._sample_seq,
-                    self.driver_name,
+                    self.driver_name, self.company_name,
                 )
                 self._ocultar_herdados(evento)
             return evento
@@ -507,18 +561,26 @@ def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = Non
     """`collector` pronto pode vir de fora: o rig o cria antes para o painel e a
     vigia do racing.ini poderem trocar o piloto com o laco rodando."""
     collector = collector or Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
-                                       args.driver_name, args.sample_hz)
+                                       args.driver_name, args.sample_hz, getattr(args, "company_name", None))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
-    print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
+    print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} - Ctrl+C para parar")
     print(f"[info] destino: {dispatcher.describe()}")
+    # Diagnostico: grava os pacotes crus no formato da captura.txt (da' para
+    # reproduzir depois com --source replay).
+    gravacao = None
+    if getattr(args, "gravar", None):
+        gravacao = open(args.gravar, "a", encoding="utf-8")
+        print(f"[info] gravando os pacotes crus em {args.gravar}")
 
     batch = []
     sent = 0
     last_flush = time.time()
     try:
         while True:
-            raw, _addr = sock.recvfrom(4096)
+            raw, addr = sock.recvfrom(4096)
+            if gravacao:
+                gravacao.write(f"{iso_now()}\t{addr[0]}:{addr[1]}\t{len(raw)}\t{raw.hex()}\n")
             ev = collector.handle_packet(raw)
             if ev:
                 if not dispatcher.enabled():
@@ -530,7 +592,9 @@ def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = Non
                 sent += len(batch)
                 batch = []
                 last_flush = time.time()
-                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
+                outros = collector.descartados_outro_carro
+                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)"
+                      f"{f' | outros carros ignorados: {outros}' if outros else ''}   ",
                       end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")
@@ -539,12 +603,15 @@ def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = Non
         print("[..] esvaziando a fila de envio")
         dispatcher.encerrar()
         print(f"[info] total enviado: {sent} amostras")
+    finally:
+        if gravacao:
+            gravacao.close()
     return 0
 
 
 def run_replay(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real",
-                          args.driver_name, args.sample_hz)
+                          args.driver_name, args.sample_hz, args.company_name)
     print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
@@ -597,8 +664,10 @@ def run_replay(args, dispatcher: "Dispatcher") -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", choices=["udp", "replay"], required=True)
-    parser.add_argument("--rig-id", default="rig-01")
-    parser.add_argument("--rig-name", default="Simulador 1")
+    # O simulador e' identificado sozinho (id_do_simulador); --rig-id so' para
+    # ensaios com varios coletores na mesma maquina.
+    parser.add_argument("--rig-id", default=None, help="(opcional) identificador do simulador; sem ele, e' gerado sozinho")
+    parser.add_argument("--rig-name", default="", help=argparse.SUPPRESS)
     parser.add_argument("--bind", default="0.0.0.0", help="[udp] endereco para escutar (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=DEFAULT_UDP_PORT, help=f"[udp] porta UDP do AMS2 (default: {DEFAULT_UDP_PORT})")
     parser.add_argument("--file", help="[replay] caminho do captura.txt")
@@ -618,6 +687,12 @@ def main() -> int:
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",
     )
+    parser.add_argument(
+        "--company-name", default=os.environ.get("RACING_COMPANY") or None,
+        help="empresa do piloto; o piloto e' identificado por nome + empresa",
+    )
+    parser.add_argument("--gravar", default=None,
+                        help="[udp] grava os pacotes crus neste arquivo (formato da captura.txt), para diagnostico")
     parser.add_argument("--endpoint", default=os.environ.get("DT_ENV_URL"))
     parser.add_argument("--token", default=os.environ.get("DT_API_TOKEN"))
     parser.add_argument(
@@ -631,6 +706,7 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    args.rig_id = args.rig_id or id_do_simulador()
 
     if args.source == "replay" and not args.file:
         print("erro: --source replay exige --file captura.txt", file=sys.stderr)

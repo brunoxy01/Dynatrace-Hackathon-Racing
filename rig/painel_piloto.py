@@ -2,9 +2,10 @@
 """Painel do rig para trocar o piloto - uma pagina simples no navegador.
 
 O HackathonRacing.exe sobe este painel em http://127.0.0.1:8765 (so' a propria
-maquina acessa) e abre o navegador nele. Trocar o nome ali grava o driver_name
-no racing.ini; a vigia do racing.ini aplica no coletor em ate' 1 segundo, sem
-reiniciar nada. Editar o racing.ini a mao tem o mesmo efeito.
+maquina acessa) e abre o navegador nele. O piloto e' nome + empresa: trocar
+qualquer um dos dois grava driver_name/company_name no racing.ini, e a vigia
+do racing.ini aplica no coletor em ate' 1 segundo, sem reiniciar nada. Editar
+o racing.ini a mao tem o mesmo efeito.
 
 Tambem roda sozinho, so' para editar o racing.ini de outro jeito:
     python rig/painel_piloto.py --config racing.ini
@@ -25,10 +26,11 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 PORTA_PADRAO = 8765
 TAMANHO_MAXIMO_DO_NOME = 40
+CAMPOS = ("driver_name", "company_name")
 
 
 # ---------- racing.ini ----------
@@ -41,17 +43,21 @@ def limpar_nome(bruto: str) -> str:
     return nome[:TAMANHO_MAXIMO_DO_NOME].strip()
 
 
-def ler_driver_name(caminho: Path) -> Optional[str]:
-    """driver_name da secao [rig]; None se a chave (ou o arquivo) nao existe."""
+def ler_identidade(caminho: Path) -> Dict[str, Optional[str]]:
+    """driver_name e company_name da secao [rig]. Chave (ou arquivo) ausente
+    vem como None; presente e vazia vem como ""."""
     parser = configparser.ConfigParser(interpolation=None)
     parser.read(caminho, encoding="utf-8-sig")
-    if parser.has_option("rig", "driver_name"):
-        return parser.get("rig", "driver_name").strip()
-    return None
+    return {chave: (parser.get("rig", chave).strip() if parser.has_option("rig", chave) else None)
+            for chave in CAMPOS}
 
 
-def gravar_driver_name(caminho: Path, nome: str) -> None:
-    """Grava driver_name na secao [rig] preservando o resto do arquivo
+def ler_driver_name(caminho: Path) -> Optional[str]:
+    return ler_identidade(caminho)["driver_name"]
+
+
+def gravar_campos(caminho: Path, valores: Dict[str, str]) -> None:
+    """Grava as chaves na secao [rig] preservando o resto do arquivo
     (comentarios, ordem, quebras de linha, BOM). A escrita e' atomica: a vigia
     nunca le um racing.ini pela metade."""
     caminho = Path(caminho)
@@ -60,8 +66,8 @@ def gravar_driver_name(caminho: Path, nome: str) -> None:
     texto = bruto.decode("utf-8-sig")
     fim_de_linha = "\r\n" if "\r\n" in texto else "\n"
     linhas = texto.splitlines(keepends=True)
-    nova = f"driver_name = {nome}"
-    secao, cabecalho_rig, feito = None, None, False
+    pendentes = dict(valores)
+    secao, cabecalho_rig = None, None
     for i, linha in enumerate(linhas):
         limpa = linha.strip()
         if limpa.startswith("[") and limpa.endswith("]"):
@@ -69,32 +75,40 @@ def gravar_driver_name(caminho: Path, nome: str) -> None:
             if secao == "rig" and cabecalho_rig is None:
                 cabecalho_rig = i
             continue
-        if secao == "rig" and re.match(r"\s*driver_name\s*[=:]", linha):
-            linhas[i] = nova + (linha[len(linha.rstrip("\r\n")):] or fim_de_linha)
-            feito = True
-            break
-    if not feito:
+        if secao != "rig":
+            continue
+        for chave in list(pendentes):
+            if re.match(rf"\s*{chave}\s*[=:]", linha):
+                linhas[i] = f"{chave} = {pendentes.pop(chave)}" + (linha[len(linha.rstrip("\r\n")):] or fim_de_linha)
+                break
+    if pendentes:
+        novas = [f"{chave} = {valor}{fim_de_linha}" for chave, valor in pendentes.items()]
         if cabecalho_rig is not None:
-            linhas.insert(cabecalho_rig + 1, nova + fim_de_linha)
+            linhas[cabecalho_rig + 1:cabecalho_rig + 1] = novas
         else:
             if linhas and not linhas[-1].endswith(("\n", "\r")):
                 linhas[-1] += fim_de_linha
-            linhas += ["[rig]" + fim_de_linha, nova + fim_de_linha]
+            linhas += ["[rig]" + fim_de_linha] + novas
     temporario = caminho.with_name(caminho.name + ".tmp")
     temporario.write_bytes((b"\xef\xbb\xbf" if bom else b"") + "".join(linhas).encode("utf-8"))
     os.replace(temporario, caminho)
 
 
-class VigiaDoIni:
-    """Confere o racing.ini a cada `intervalo` segundos e chama `ao_mudar(nome)`
-    quando o driver_name muda. Vazio vira None: volta ao nome do perfil do jogo.
-    Chave ausente nao muda nada (fica o que estava valendo)."""
+def gravar_driver_name(caminho: Path, nome: str) -> None:
+    gravar_campos(caminho, {"driver_name": nome})
 
-    def __init__(self, caminho: Path, ao_mudar: Callable[[Optional[str]], None],
-                 inicial: Optional[str], intervalo: float = 1.0):
+
+class VigiaDoIni:
+    """Confere o racing.ini a cada `intervalo` segundos e chama
+    `ao_mudar(nome, empresa)` quando driver_name ou company_name mudam. Vazio
+    vira None (sem nome: vale o do perfil do jogo). Chave ausente nao muda nada
+    (fica o que estava valendo)."""
+
+    def __init__(self, caminho: Path, ao_mudar: Callable[[Optional[str], Optional[str]], None],
+                 inicial: Tuple[Optional[str], Optional[str]] = (None, None), intervalo: float = 1.0):
         self.caminho = Path(caminho)
         self.ao_mudar = ao_mudar
-        self.atual = inicial
+        self.atual = tuple((valor or "").strip() or None for valor in inicial)
         self.intervalo = intervalo
         self._marca = self._marca_do_arquivo()
         self._parar = threading.Event()
@@ -112,17 +126,16 @@ class VigiaDoIni:
         if marca is None or marca == self._marca:
             return False
         try:
-            valor = ler_driver_name(self.caminho)
+            lido = ler_identidade(self.caminho)
         except (configparser.Error, OSError, UnicodeDecodeError):
             return False  # salvo pela metade no editor: tenta na proxima volta
         self._marca = marca
-        if valor is None:
+        novo = tuple(atual if lido[chave] is None else (lido[chave] or None)
+                     for chave, atual in zip(CAMPOS, self.atual))
+        if novo == self.atual:
             return False
-        nome = valor or None
-        if nome == self.atual:
-            return False
-        self.atual = nome
-        self.ao_mudar(nome)
+        self.atual = novo
+        self.ao_mudar(*novo)
         return True
 
     def iniciar(self) -> "VigiaDoIni":
@@ -147,7 +160,7 @@ PAGINA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trocar piloto - {rig_id}</title>
+<title>Trocar piloto - Hackathon Racing</title>
 <style>
   body {{ margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #14161f; color: #f0f1f5; }}
   main {{ max-width: 520px; margin: 48px auto; padding: 0 20px; }}
@@ -156,26 +169,27 @@ PAGINA = """<!doctype html>
   h1 {{ font-size: 24px; margin: 6px 0 20px; }}
   .atual {{ background: #262a3c; border-radius: 8px; padding: 14px 16px; margin-bottom: 22px; }}
   .atual b {{ display: block; font-size: 22px; margin-top: 4px; }}
+  .empresa {{ font-size: 15px; color: #c9cde0; margin-top: 2px; }}
   .detalhe {{ font-size: 12px; color: #9aa0b8; margin-top: 6px; }}
-  label {{ display: block; font-size: 13px; margin-bottom: 6px; }}
+  label {{ display: block; font-size: 13px; margin: 14px 0 6px; }}
   input[type=text] {{ width: 100%; box-sizing: border-box; font-size: 18px; padding: 12px; border-radius: 8px;
                      border: 1px solid #4a5170; background: #11131b; color: #fff; }}
-  button {{ margin-top: 14px; width: 100%; font-size: 17px; padding: 12px; border: 0; border-radius: 8px;
+  button {{ margin-top: 18px; width: 100%; font-size: 17px; padding: 12px; border: 0; border-radius: 8px;
            background: #8b55ec; color: #fff; cursor: pointer; }}
   button:hover {{ background: #9d6ff0; }}
   .msg {{ margin-top: 16px; padding: 12px 14px; border-radius: 8px; background: #1f3b2c; color: #b8f2cf; }}
-  .msg.erro {{ background: #4a1f25; color: #ffc9cf; }}
   .ajuda {{ font-size: 12px; color: #9aa0b8; margin-top: 18px; line-height: 1.5; }}
 </style>
 </head>
 <body>
 <main>
   <div class="card">
-    <div class="eyebrow">Hackathon Racing {versao} &middot; {rig_id}</div>
-    <h1>Trocar piloto &middot; {rig_name}</h1>
+    <div class="eyebrow">Hackathon Racing {versao}</div>
+    <h1>Trocar piloto</h1>
     <div class="atual">
       <span class="eyebrow">Piloto em uso agora</span>
       <b id="piloto">{piloto}</b>
+      <div class="empresa" id="empresa">{empresa}</div>
       <div class="detalhe" id="detalhe">{detalhe}</div>
     </div>
     <form method="post" action="/piloto">
@@ -183,11 +197,15 @@ PAGINA = """<!doctype html>
       <label for="nome">Nome do piloto</label>
       <input type="text" id="nome" name="nome" value="{nome_no_ini}" maxlength="{tamanho}" autofocus autocomplete="off"
              placeholder="Em branco = nome do perfil do AMS2">
+      <label for="empresa_campo">Empresa</label>
+      <input type="text" id="empresa_campo" name="empresa" value="{empresa_no_ini}" maxlength="{tamanho}" autocomplete="off"
+             placeholder="Empresa do piloto">
       <button type="submit">Trocar piloto</button>
     </form>
     {mensagem}
-    <p class="ajuda">Vale na hora, sem reiniciar o coletor. A volta em andamento fica com o novo piloto,
-      e o ultimo tempo do piloto anterior nao aparece como sendo dele. Em branco, o nome vem do perfil do AMS2.</p>
+    <p class="ajuda">O piloto e' identificado por nome + empresa. Vale na hora, sem reiniciar o coletor.
+      A volta em andamento fica com o novo piloto, e o ultimo tempo do piloto anterior nao aparece como sendo dele.
+      Sem nome, vale o do perfil do AMS2.</p>
   </div>
 </main>
 <script>
@@ -196,6 +214,7 @@ PAGINA = """<!doctype html>
       const r = await fetch('/estado', {{cache: 'no-store'}});
       const e = await r.json();
       document.getElementById('piloto').textContent = e.piloto_em_uso || 'Aguardando o jogo';
+      document.getElementById('empresa').textContent = e.empresa_em_uso || 'Empresa nao informada';
       document.getElementById('detalhe').textContent = e.detalhe;
     }} catch (erro) {{ /* coletor fechado: fica o ultimo estado */ }}
   }}
@@ -210,8 +229,8 @@ def _detalhe(estado: dict) -> str:
     partes = []
     if estado.get("origem"):
         partes.append(f"nome vindo do {estado['origem']}")
-    if estado.get("sessao"):
-        partes.append(f"sessao {estado['sessao']}")
+    if estado.get("descartados_outro_carro"):
+        partes.append(f"{estado['descartados_outro_carro']} quadros de outros carros ignorados")
     return " · ".join(partes) or "coletor ainda sem dados do jogo"
 
 
@@ -229,13 +248,15 @@ class ServidorDoPainel(ThreadingHTTPServer):
     def estado(self) -> dict:
         estado = dict(self.obter_estado()) if self.obter_estado else {}
         try:
-            nome_no_ini = ler_driver_name(self.caminho_ini)
+            no_ini = ler_identidade(self.caminho_ini)
         except (configparser.Error, OSError, UnicodeDecodeError):
-            nome_no_ini = None
+            no_ini = {chave: None for chave in CAMPOS}
         if not self.obter_estado:  # rodando sozinho, sem o coletor
-            estado.setdefault("piloto_em_uso", nome_no_ini or None)
-            estado.setdefault("origem", "racing.ini" if nome_no_ini else None)
-        estado["nome_no_ini"] = nome_no_ini or ""
+            estado.setdefault("piloto_em_uso", no_ini["driver_name"] or None)
+            estado.setdefault("empresa_em_uso", no_ini["company_name"] or None)
+            estado.setdefault("origem", "racing.ini" if no_ini["driver_name"] else None)
+        estado["nome_no_ini"] = no_ini["driver_name"] or ""
+        estado["empresa_no_ini"] = no_ini["company_name"] or ""
         estado["detalhe"] = _detalhe(estado)
         return estado
 
@@ -268,18 +289,19 @@ class _Painel(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(url.query)
         mensagem = ""
         if "trocado" in query:
-            novo = query.get("nome", [""])[0]
-            texto = f"Piloto trocado para {novo}." if novo else "Piloto trocado: agora vale o nome do perfil do AMS2."
+            novo = query.get("nome", [""])[0] or "o nome do perfil do AMS2"
+            empresa = query.get("empresa", [""])[0]
+            texto = f"Piloto trocado para {novo}{f' ({empresa})' if empresa else ''}."
             mensagem = f'<div class="msg" role="status">{html.escape(texto)} O coletor aplica em ate\' 1 segundo.</div>'
         estado = self.server.estado()
         corpo = PAGINA.format(
-            rig_id=html.escape(str(estado.get("rig_id") or "rig")),
-            rig_name=html.escape(str(estado.get("rig_name") or "")),
             versao=html.escape(str(estado.get("versao") or "")),
             piloto=html.escape(estado.get("piloto_em_uso") or "Aguardando o jogo"),
+            empresa=html.escape(estado.get("empresa_em_uso") or "Empresa nao informada"),
             detalhe=html.escape(estado["detalhe"]),
             token=self.server.token,
             nome_no_ini=html.escape(estado["nome_no_ini"], quote=True),
+            empresa_no_ini=html.escape(estado["empresa_no_ini"], quote=True),
             tamanho=TAMANHO_MAXIMO_DO_NOME,
             mensagem=mensagem,
         ).encode("utf-8")
@@ -298,8 +320,9 @@ class _Painel(BaseHTTPRequestHandler):
             self._responder(403, b"token invalido: recarregue a pagina", "text/plain; charset=utf-8")
             return
         nome = limpar_nome(dados.get("nome", [""])[0])
-        gravar_driver_name(self.server.caminho_ini, nome)
-        destino = "/?trocado=1&nome=" + urllib.parse.quote(nome)
+        empresa = limpar_nome(dados.get("empresa", [""])[0])
+        gravar_campos(self.server.caminho_ini, {"driver_name": nome, "company_name": empresa})
+        destino = "/?trocado=1&nome=" + urllib.parse.quote(nome) + "&empresa=" + urllib.parse.quote(empresa)
         self._responder(303, b"", "text/plain; charset=utf-8", {"Location": destino})
 
 
@@ -311,7 +334,7 @@ def iniciar_painel(caminho_ini: Path, obter_estado: Optional[Callable[[], dict]]
         servidor = ServidorDoPainel(("127.0.0.1", porta), caminho_ini, obter_estado)
     except OSError as erro:
         print(f"[!!] painel de troca de piloto nao subiu na porta {porta}: {erro}")
-        print("     o nome ainda pode ser trocado editando driver_name no racing.ini")
+        print("     o piloto ainda pode ser trocado editando driver_name/company_name no racing.ini")
         return None
     threading.Thread(target=servidor.serve_forever, name="painel-piloto", daemon=True).start()
     return f"http://127.0.0.1:{servidor.server_address[1]}/"

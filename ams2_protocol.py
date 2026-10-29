@@ -118,7 +118,11 @@ MAX_PLAUSIBLE_G = 10.0
 
 
 def decode_telemetry(raw: bytes) -> dict:
-    """packetType == 0. Carro atualmente visualizado (o simulador local)."""
+    """packetType == 0. Carro atualmente VISUALIZADO pela camera do jogo - que
+    nem sempre e' o do piloto deste PC: nos boxes, no menu, no replay ou numa
+    corrida online o AMS2 manda aqui o carro que a camera mostra. Quem decide se
+    o quadro e' do proprio carro e' SessionState.aceita_telemetria."""
+    viewed = _i8(raw, 12)  # sViewedParticipantIndex
     brake = _u8(raw, 29)
     throttle = _u8(raw, 30)
     clutch = _u8(raw, 31)
@@ -135,6 +139,7 @@ def decode_telemetry(raw: bytes) -> dict:
     speed_kmh = round(speed_ms * 3.6, 1)
 
     return {
+        "viewed_participant": viewed,
         "speed_kmh": speed_kmh if 0 <= speed_kmh <= MAX_PLAUSIBLE_SPEED_KMH else None,
         "gear": gear,
         "num_gears": num_gears,
@@ -153,11 +158,18 @@ TIMINGS_PARTICIPANTS_OFFSET = 33
 PARTICIPANT_INFO_SIZE = 32
 
 
-def decode_timings(raw: bytes) -> dict:
-    """packetType == 3. Retorna os dados do participante local (o jogador)."""
+MAX_PARTICIPANTS = 32
+
+
+def decode_timings(raw: bytes, indice: Optional[int] = None) -> dict:
+    """packetType == 3. O pacote traz TODOS os participantes da sessao; devolve
+    os dados de `indice` (o carro do piloto deste PC, decidido pelo
+    SessionState) ou, sem ele, do sLocalParticipantIndex que o jogo informa."""
     num_participants = _i8(raw, 12)
     local_idx = _u16(raw, 1057)
-    off = TIMINGS_PARTICIPANTS_OFFSET + local_idx * PARTICIPANT_INFO_SIZE
+    if indice is None:
+        indice = local_idx if local_idx < MAX_PARTICIPANTS else 0
+    off = TIMINGS_PARTICIPANTS_OFFSET + indice * PARTICIPANT_INFO_SIZE
 
     race_pos_byte = _u8(raw, off + 14)
     # sSector: os 3 bits baixos sao o setor atual (0 = S1, 1 = S2, 2 = S3); os
@@ -184,14 +196,33 @@ def decode_timings(raw: bytes) -> dict:
 
 
 def decode_participants(raw: bytes) -> dict:
-    """packetType == 2. Nomes dos pilotos (ate 16). Retorna {index: name}."""
+    """packetType == 2. Nomes dos pilotos, 16 por pacote. Retorna
+    {posicao_do_participante: nome}, na mesma numeracao do pacote de tempos.
+
+    A posicao e' a ordem na lista (pacote parcial N cobre 16*(N-1)..16*N-1). O
+    sIndex que vem junto e' o identificador da partida online, nao a posicao:
+    usar ele como chave fazia o coletor pegar o nome de OUTRO piloto da sessao
+    (o "Andy Schultz") quando havia mais de um carro."""
+    parcial = max(_u8(raw, 8), 1)
     names = {}
     for i in range(16):
         name = _str(raw, 16 + i * 64, 64)
         if name:
-            idx = _u16(raw, 1104 + i * 2)
-            names[idx] = name
+            names[(parcial - 1) * 16 + i] = name
     return names
+
+
+# Estado do jogo (pacote 4, byte 14, 3 bits baixos). So' com o piloto
+# dirigindo a telemetria e' do carro dele; no menu, pausado ou no replay a
+# camera pode estar em qualquer carro. Conferido na captura: 2 dirigindo, 1 no
+# menu principal ao sair.
+GAME_STATE_PLAYING = 2
+
+
+def decode_game_state(raw: bytes) -> int:
+    """packetType == 4. 0 saiu, 1 menu principal, 2 dirigindo, 3 pausado,
+    4 menu com o tempo correndo (boxes/garagem), 5 reiniciando, 6/7 replay."""
+    return _u8(raw, 14) & 0x07
 
 
 VEHICLE_INFO_OFFSET = 12
@@ -275,14 +306,80 @@ class SessionState:
     # Tempo anunciado durante o S3 da volta em andamento, um instante antes da
     # linha: e' o tempo DESTA volta.
     _anuncio_no_s3: Optional[float] = field(default=None, repr=False)
+    # ---- Qual carro e' o do piloto deste PC ----
+    # O AMS2 manda a telemetria do carro que a CAMERA mostra (boxes, menu,
+    # replay, corrida online) e os pacotes de tempos trazem todos os
+    # participantes. O carro proprio e' o indice que o jogo informa como local
+    # ENQUANTO o piloto dirige; ele so' muda se o novo indice se mantiver por
+    # ~1 s, para uma alternancia de pacote a pacote nao trocar de carro.
+    _estado_jogo: Optional[int] = field(default=None, repr=False)
+    _meu_indice: Optional[int] = field(default=None, repr=False)
+    _candidato: Optional[int] = field(default=None, repr=False)
+    _candidato_vezes: int = field(default=0, repr=False)
+    _nomes: dict = field(default_factory=dict, repr=False)
+
+    PACOTES_PARA_TROCAR_DE_CARRO = 20  # pacotes de tempos (~1 s com UDP Frequency 1)
+
+    def indice_proprio(self) -> Optional[int]:
+        """Posicao do carro do piloto deste PC na lista de participantes."""
+        return self._meu_indice if self._meu_indice is not None else self._last_participant_index
+
+    def dirigindo(self) -> bool:
+        """Sem pacote de estado ainda, considera que sim (comportamento antigo)."""
+        return self._estado_jogo is None or self._estado_jogo == GAME_STATE_PLAYING
+
+    def aceita_telemetria(self, visualizado: int) -> bool:
+        """O quadro de telemetria e' do carro do piloto deste PC? Nao, se o jogo
+        nao esta' em "dirigindo" (boxes, menu, pausa, replay) ou se a camera
+        mostra outro participante."""
+        if not self.dirigindo():
+            return False
+        proprio = self.indice_proprio()
+        return proprio is None or visualizado == proprio
+
+    def ingest_game_state(self, raw: bytes) -> None:
+        self._estado_jogo = decode_game_state(raw)
+
+    def _acompanhar_indice_proprio(self, local: int) -> None:
+        if local >= MAX_PARTICIPANTS:
+            return
+        self._last_participant_index = local
+        if not self.dirigindo():
+            return
+        if self._meu_indice is None:
+            self._meu_indice = local
+            self._atualizar_nome()
+            return
+        if local == self._meu_indice:
+            self._candidato, self._candidato_vezes = None, 0
+            return
+        if local == self._candidato:
+            self._candidato_vezes += 1
+        else:
+            self._candidato, self._candidato_vezes = local, 1
+        if self._candidato_vezes >= self.PACOTES_PARA_TROCAR_DE_CARRO:
+            # Outro carro de verdade (sessao nova, troca de carro): recomeca o
+            # acompanhamento de setores para nao misturar as voltas dos dois.
+            self._meu_indice = local
+            self._candidato, self._candidato_vezes = None, 0
+            self._inicio_setor, self._concluida, self._anuncio_no_s3 = {}, None, None
+            self._sector, self._maior_cur, self._ultimo_cur = None, None, None
+            self._atualizar_nome()
 
     def ingest_participants(self, raw: bytes) -> None:
-        names = decode_participants(raw)
-        if self._last_participant_index is not None and self._last_participant_index in names:
-            self.driver_name = names[self._last_participant_index]
-        elif names:
-            # sessao com 1 unico piloto: pega o primeiro nome nao vazio
-            self.driver_name = next(iter(names.values()))
+        # Cada pacote parcial cobre 16 posicoes: some quem saiu da sessao.
+        parcial = max(raw[8], 1) if len(raw) > 8 else 1
+        for posicao in range((parcial - 1) * 16, parcial * 16):
+            self._nomes.pop(posicao, None)
+        self._nomes.update(decode_participants(raw))
+        self._atualizar_nome()
+
+    def _atualizar_nome(self) -> None:
+        proprio = self.indice_proprio()
+        if proprio is not None and proprio in self._nomes:
+            self.driver_name = self._nomes[proprio]
+        elif proprio is None and len(self._nomes) == 1:
+            self.driver_name = next(iter(self._nomes.values()))
 
     def ingest_vehicle_names(self, raw: bytes, size_bytes: int) -> None:
         # O AMS2 manda sCarIndex = 0xFFFF para o carro do proprio jogador (o
@@ -298,8 +395,8 @@ class SessionState:
 
     def ingest_time_stats(self, raw: bytes) -> None:
         stats = decode_time_stats(raw)
-        # Never attribute another participant's record to the local driver.
-        s = stats.get(self._last_participant_index)
+        # Nunca atribuir o tempo de outro participante ao piloto deste PC.
+        s = stats.get(self.indice_proprio())
         if s:
             anterior = self.last_lap_s
             self.last_lap_s = s["last_lap_s"]
@@ -326,9 +423,9 @@ class SessionState:
                 self.best_lap_s = rd["personal_fastest_lap_s"]
 
     def ingest_timings(self, raw: bytes) -> dict:
-        t = decode_timings(raw)
+        self._acompanhar_indice_proprio(_u16(raw, 1057))
+        t = decode_timings(raw, self.indice_proprio())
         self._last_car_index = t["car_index"]
-        self._last_participant_index = t["local_participant_index"]
         self._acompanhar_setores(t)
         return t
 

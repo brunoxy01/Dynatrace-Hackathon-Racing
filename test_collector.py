@@ -309,6 +309,8 @@ class DriverSwapTests(unittest.TestCase):
         for raw in self.pacotes:
             self.coletor.handle_packet(raw)
         self.assertEqual(104.015, self.coletor.state.last_lap_s)
+        # A captura termina no menu principal; o piloto volta a dirigir.
+        self.coletor.handle_packet(_estado_do_jogo(self.pacotes, 2))
 
     def test_new_driver_gets_a_new_session(self):
         antes = self.coletor.handle_packet(self.telemetria)
@@ -342,6 +344,91 @@ class DriverSwapTests(unittest.TestCase):
         sessao = self.coletor.session_id
         self.coletor.trocar_piloto("Bruno Lima")
         self.assertEqual(sessao, self.coletor.session_id)
+
+    def test_driver_is_name_plus_company(self):
+        sessao = self.coletor.session_id
+        self.coletor.trocar_piloto("Bruno Lima", "Dynatrace")
+        evento = self.coletor.handle_packet(self.telemetria)
+        self.assertEqual(("Bruno Lima", "Dynatrace"), (evento["driver_name"], evento["company_name"]))
+        self.assertNotEqual(sessao, evento["session.id"], "outra empresa = outro piloto = sessao nova")
+        self.assertNotIn("rig.name", evento)
+
+
+def _estado_do_jogo(pacotes, estado):
+    """Pacote de estado do jogo (tipo 4) da captura com o estado trocado."""
+    b = bytearray(next(raw for raw in pacotes if decode_header(raw).packet_type == 4))
+    b[14] = (b[14] & 0xF8) | estado
+    return bytes(b)
+
+
+class OwnCarTests(unittest.TestCase):
+    """O AMS2 manda na telemetria o carro que a CAMERA mostra; numa corrida
+    online ou nos boxes isso pode ser outro participante. So' o carro do
+    piloto deste PC entra nas amostras."""
+
+    def setUp(self):
+        self.pacotes = _pacotes_da_captura()
+        self.coletor = Collector("rig", "Rig", "s", "real", "Bruno Lima")
+        self.coletor.handle_packet(_estado_do_jogo(self.pacotes, 2))
+        self.tempos = next(raw for raw in self.pacotes if decode_header(raw).packet_type == 3)
+        self.telemetria = next(raw for raw in self.pacotes if decode_header(raw).packet_type == 0)
+
+    def _tempos_com_local(self, local, participantes=2):
+        """Pacote de tempos com 2 participantes: o 0 da captura e um 1 parado na
+        volta 9; `local` e' o indice que o jogo informa como jogador local."""
+        b = bytearray(self.tempos)
+        b[12] = participantes
+        b[33 + 32:33 + 64] = b[33:33 + 32]
+        b[33 + 32 + 21] = 9  # volta 9 no participante 1
+        struct.pack_into("<H", b, 1057, local)
+        return bytes(b)
+
+    def _telemetria_vista(self, visualizado):
+        b = bytearray(self.telemetria)
+        b[12] = visualizado & 0xFF
+        return bytes(b)
+
+    def test_frames_of_another_participant_are_dropped(self):
+        self.coletor.handle_packet(self._tempos_com_local(0))
+        self.assertIsNotNone(self.coletor.handle_packet(self._telemetria_vista(0)))
+        self.assertIsNone(self.coletor.handle_packet(self._telemetria_vista(1)), "camera no outro carro")
+        self.assertEqual(1, self.coletor.descartados_outro_carro)
+
+    def test_frames_outside_driving_are_dropped(self):
+        self.coletor.handle_packet(self._tempos_com_local(0))
+        for estado in (1, 3, 4, 6):  # menu, pausado, boxes/garagem, replay
+            self.coletor.handle_packet(_estado_do_jogo(self.pacotes, estado))
+            self.assertIsNone(self.coletor.handle_packet(self._telemetria_vista(0)), f"estado {estado}")
+        self.coletor.handle_packet(_estado_do_jogo(self.pacotes, 2))
+        self.assertIsNotNone(self.coletor.handle_packet(self._telemetria_vista(0)))
+
+    def test_alternating_local_index_does_not_switch_the_car(self):
+        self.coletor.handle_packet(self._tempos_com_local(0))
+        for i in range(30):  # o jogo alterna o "local" pacote a pacote
+            self.coletor.handle_packet(self._tempos_com_local(i % 2))
+        self.assertEqual(0, self.coletor.state.indice_proprio())
+        evento = self.coletor.handle_packet(self._telemetria_vista(0))
+        self.assertNotEqual(9, evento["lap_number"], "volta lida do carro proprio, nao do participante 1")
+
+    def test_a_steady_new_local_index_is_a_real_car_change(self):
+        self.coletor.handle_packet(self._tempos_com_local(0))
+        for _ in range(20):
+            self.coletor.handle_packet(self._tempos_com_local(1))
+        self.assertEqual(1, self.coletor.state.indice_proprio())
+        self.assertEqual(9, self.coletor.handle_packet(self._telemetria_vista(1))["lap_number"])
+
+    def test_game_name_comes_from_the_own_position_not_the_online_id(self):
+        # Dois pilotos na lista, os dois com o mesmo sIndex (id da partida
+        # online). Antes, o ultimo da lista sobrescrevia: "Andy Schultz".
+        participantes = bytearray(next(raw for raw in self.pacotes if decode_header(raw).packet_type == 2))
+        participantes[16:16 + 64] = b"Alexandre Sacco".ljust(64, b"\0")
+        participantes[16 + 64:16 + 128] = b"Andy Schultz".ljust(64, b"\0")
+        struct.pack_into("<HH", participantes, 1104, 0, 0)
+        coletor = Collector("rig", "Rig", "s", "real")  # sem nome: vale o do jogo
+        coletor.handle_packet(_estado_do_jogo(self.pacotes, 2))
+        coletor.handle_packet(self._tempos_com_local(0))
+        coletor.handle_packet(bytes(participantes))
+        self.assertEqual("Alexandre Sacco", coletor.handle_packet(self._telemetria_vista(0))["driver_name"])
 
 
 class _Contador(BaseHTTPRequestHandler):

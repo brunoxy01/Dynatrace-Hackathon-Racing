@@ -109,22 +109,22 @@ python prepare_capture.py
 ## Preparar os simuladores para o evento
 
 1. No AMS2, habilite a saída UDP e selecione o protocolo Project CARS 2. Confira frequência e porta no local; o coletor usa 5606 por padrão.
-2. Execute um coletor por simulador, com `rig-id` diferente. Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
+2. Execute um coletor por simulador; cada PC é identificado sozinho (`rig.id` automático, que não aparece nas telas). Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
 3. Antes de cada nova participação, reinicie o coletor para gerar nova `session.id`. Confirme o nome no jogo: o mesmo perfil sem separar sessões mistura participantes.
 4. Abra **Grail · histórico e ao vivo** e selecione o período desejado. O padrão são os últimos 7 dias; o seletor Strato oferece horas, hoje, ontem e datas personalizadas. Intervalos terminando em agora atualizam a cada 30 segundos; períodos fechados podem ser atualizados manualmente. A consulta retorna até 10.000 eventos recentes no intervalo e avisa quando atinge esse limite. Rankings representam essa amostra; para classificar todo o evento ainda é necessário persistir/agregar resultados no backend.
 
 Primeiro, teste sem ingestão:
 
 ```powershell
-python ams2_collector.py --source udp --port 5606 --rig-id rig-01 --rig-name "Simulador 1" --dry-run
+python ams2_collector.py --source udp --port 5606 --company-name "Dynatrace" --dry-run
 ```
 
 Para ingerir, este coletor usa Classic API token com escopo `bizevents.ingest` e Environment API v2. Configure `DT_ENV_URL` com a URL do ambiente classic (`https://SEU_AMBIENTE.live.dynatrace.com`) e `DT_API_TOKEN` com seu token apenas na sessão do terminal. Não salve credenciais no repositório. Depois execute:
 
 ```powershell
-python ams2_collector.py --source udp --port 5606 --rig-id rig-01 --rig-name "Simulador 1"
+python ams2_collector.py --source udp --port 5606 --company-name "Dynatrace"
 # Ensaio de ingestão com o dump, sem o jogo
-python ams2_collector.py --source replay --file captura.txt --speed 1 --rig-id ensaio-01 --rig-name "Ensaio"
+python ams2_collector.py --source replay --file captura.txt --speed 1 --company-name "Teste"
 ```
 
 O envio real consome ingestão. O coletor registra falhas HTTP, mas não possui fila persistente/reenvio. Valide isso antes de usá-lo como registro oficial da competição. Não use `--loop` para resultados competitivos; mantenha ensaios separados do evento.

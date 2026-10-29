@@ -19,14 +19,17 @@ PASSO 1 - preencher o racing.ini
 --------------------------------
 Abra o racing.ini no Bloco de Notas e preencha:
 
-  rig_id        = rig-01        <- use rig-01, rig-02 ou rig-03.
-                                   PRECISA SER DIFERENTE EM CADA PC.
   dt_env_url    = https://SEU_AMBIENTE.live.dynatrace.com
   dt_api_token  = dt0c01....
   driver_name   =               <- veja o PASSO 4
+  company_name  =               <- veja o PASSO 4
 
 A URL e o token vem com o Bruno. Sem eles nada chega no Dynatrace.
 NAO mande o racing.ini preenchido por e-mail ou WhatsApp: ele tem o token.
+
+Nao existe mais nome de simulador (rig_id / rig-01): cada PC e' identificado
+sozinho, e isso nao aparece em tela nenhuma. Se o seu racing.ini antigo ainda
+tem rig_id ou rig_name, pode apagar as linhas - elas sao ignoradas.
 
 
 PASSO 2 - testar SEM o jogo (recomendado antes de tudo)
@@ -40,7 +43,7 @@ Isso reproduz a volta gravada como se fosse o jogo. Se aparecer
 dados ja' estao indo para o Dynatrace. Ctrl+C para parar.
 
 Dica: para nao poluir os dados de verdade, avise o Bruno que voce esta
-testando, ou use rig_id = teste-01 nessa hora.
+testando, ou use company_name = Teste nessa hora.
 
 
 PASSO 3 - configurar o Automobilista 2
@@ -53,23 +56,29 @@ No jogo: Options > System
 Sem isso o jogo nao transmite nada e a tela fica parada em zero.
 
 
-PASSO 4 - o nome do piloto
---------------------------
+PASSO 4 - o piloto: nome e empresa
+----------------------------------
 O AMS2 nao pergunta o nome do piloto: ele usa o da conta Steam do PC
 (algo como "plinioaugusto01"). Como o rig e' compartilhado, informe quem
-esta na cadeira. NAO precisa fechar o HackathonRacing.exe para trocar.
+esta na cadeira e de qual empresa ele e'. NAO precisa fechar o
+HackathonRacing.exe para trocar.
+
+O piloto e' NOME + EMPRESA: "Bruno / Dynatrace" e "Bruno / Itau" sao duas
+pessoas diferentes no placar. Use sempre a mesma grafia da empresa
+(maiusculas e espacos nas pontas nao importam).
 
 Jeito facil - o painel "Trocar piloto":
   Ao abrir o HackathonRacing.exe, o navegador abre sozinho uma pagina
-  (http://127.0.0.1:8765). Digite o nome, clique em "Trocar piloto" e
-  pronto: vale em ate' 1 segundo. Fechou a aba? Duplo clique em
-  "Trocar piloto.url" reabre.
+  (http://127.0.0.1:8765). Digite o nome e a empresa, clique em
+  "Trocar piloto" e pronto: vale em ate' 1 segundo. Fechou a aba? Duplo
+  clique em "Trocar piloto.url" reabre.
 
 Ou pelo racing.ini:
   driver_name  = Bruno Lima
+  company_name = Dynatrace
   Salve o arquivo com o programa aberto: vale em ate' 1 segundo.
 
-O que acontece na troca:
+O que acontece na troca (do nome ou da empresa):
   - o piloto novo ganha uma sessao propria no painel do Dynatrace;
   - a volta que estiver em andamento fica com o piloto novo;
   - o ultimo tempo e o recorde do piloto anterior NAO aparecem como sendo
@@ -103,7 +112,18 @@ Se der problema
     piloto pelo racing.ini, ou mude painel_porta (ex.: 8766) no racing.ini.
 
 O contador nao sobe com o jogo aberto
-    o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista
+    o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista.
+    Nos menus (inclusive o da garagem), no replay e com o jogo pausado o
+    programa nao envia nada de proposito: so' conta enquanto voce dirige.
+
+"outros carros ignorados: N"
+    normal numa corrida online. O jogo manda a telemetria do carro que a
+    camera esta mostrando; quando ela mostra outro piloto, o programa
+    descarta esses dados para nao misturar com os seus.
+
+Para investigar um problema com o Bruno
+    rode  HackathonRacing.exe --gravar pacotes.txt  e mande o pacotes.txt
+    (ele tem so' os dados do jogo, nao tem o token).
 
 A internet caiu no meio
     nao tem problema: o collector guarda na pasta fila-otel e reenvia

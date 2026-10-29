@@ -54,31 +54,52 @@ class IniTests(unittest.TestCase):
         self.assertEqual(40, len(painel_piloto.limpar_nome("x" * 80)))
         self.assertEqual("José Ção", painel_piloto.limpar_nome("José Ção"))
 
+    def _vigia(self, aplicados, inicial=("Bruno Lima", None)):
+        return painel_piloto.VigiaDoIni(self.ini, lambda nome, empresa: aplicados.append((nome, empresa)), inicial)
+
+    def _mexeu(self):
+        os.utime(self.ini, ns=(1, 2_000_000_000_000_000_000))  # garante mtime diferente
+
     def test_watcher_applies_a_new_name_once(self):
         aplicados = []
-        vigia = painel_piloto.VigiaDoIni(self.ini, aplicados.append, "Bruno Lima")
+        vigia = self._vigia(aplicados)
         self.assertFalse(vigia.checar(), "arquivo sem mudanca")
         painel_piloto.gravar_driver_name(self.ini, "Ana")
-        os.utime(self.ini, ns=(1, 2_000_000_000_000_000_000))  # garante mtime diferente
+        self._mexeu()
         self.assertTrue(vigia.checar())
         self.assertFalse(vigia.checar())
-        self.assertEqual(["Ana"], aplicados)
+        self.assertEqual([("Ana", None)], aplicados)
+
+    def test_watcher_applies_a_company_change(self):
+        aplicados = []
+        vigia = self._vigia(aplicados)
+        painel_piloto.gravar_campos(self.ini, {"company_name": "Dynatrace"})
+        self._mexeu()
+        vigia.checar()
+        self.assertEqual([("Bruno Lima", "Dynatrace")], aplicados)
 
     def test_watcher_blank_name_means_game_profile(self):
         aplicados = []
-        vigia = painel_piloto.VigiaDoIni(self.ini, aplicados.append, "Bruno Lima")
+        vigia = self._vigia(aplicados)
         painel_piloto.gravar_driver_name(self.ini, "")
-        os.utime(self.ini, ns=(1, 2_000_000_000_000_000_000))
+        self._mexeu()
         vigia.checar()
-        self.assertEqual([None], aplicados)
+        self.assertEqual([(None, None)], aplicados)
 
-    def test_watcher_ignores_a_file_without_the_key(self):
+    def test_watcher_ignores_a_file_without_the_keys(self):
         aplicados = []
-        vigia = painel_piloto.VigiaDoIni(self.ini, aplicados.append, "Bruno Lima")
-        self.ini.write_text("[rig]\nrig_id = rig-01\n", encoding="utf-8")
-        os.utime(self.ini, ns=(1, 2_000_000_000_000_000_000))
+        vigia = self._vigia(aplicados)
+        self.ini.write_text("[rig]\nams2_port = 5606\n", encoding="utf-8")
+        self._mexeu()
         self.assertFalse(vigia.checar())
         self.assertEqual([], aplicados)
+
+    def test_name_and_company_are_written_together(self):
+        painel_piloto.gravar_campos(self.ini, {"driver_name": "Ana", "company_name": "Itau"})
+        self.assertEqual({"driver_name": "Ana", "company_name": "Itau"}, painel_piloto.ler_identidade(self.ini))
+        texto = self.ini.read_text(encoding="utf-8")
+        self.assertIn("dt_api_token = segredo", texto)
+        self.assertIn("# Quem esta na cadeira.", texto)
 
 
 class PainelTests(unittest.TestCase):
@@ -110,18 +131,20 @@ class PainelTests(unittest.TestCase):
         pagina = self._get()
         self.assertIn("Bruno Lima", pagina)
         self.assertIn('action="/piloto"', pagina)
-        self.assertIn("rig-01", pagina)
+        self.assertIn('name="empresa"', pagina)
+        self.assertNotIn("rig-01", pagina, "o simulador nao aparece mais em lugar nenhum")
 
     def test_changing_the_driver_from_the_page_reaches_the_collector(self):
-        vigia = painel_piloto.VigiaDoIni(self.ini, self.coletor.trocar_piloto, "Bruno Lima")
-        pagina = self._post({"nome": "Ana Souza", "token": self._token()})
-        self.assertIn("Piloto trocado para Ana Souza", pagina)
-        self.assertEqual("Ana Souza", painel_piloto.ler_driver_name(self.ini))
+        vigia = painel_piloto.VigiaDoIni(self.ini, self.coletor.trocar_piloto, ("Bruno Lima", None))
+        pagina = self._post({"nome": "Ana Souza", "empresa": "Itau", "token": self._token()})
+        self.assertIn("Piloto trocado para Ana Souza (Itau)", pagina)
+        self.assertEqual({"driver_name": "Ana Souza", "company_name": "Itau"}, painel_piloto.ler_identidade(self.ini))
         os.utime(self.ini, ns=(1, 2_000_000_000_000_000_000))
         vigia.checar()  # o que a thread da vigia faz a cada segundo
-        self.assertEqual("Ana Souza", self.coletor.piloto_em_uso())
+        self.assertEqual(("Ana Souza", "Itau"), (self.coletor.piloto_em_uso(), self.coletor.company_name))
         estado = json.loads(self._get("estado"))
         self.assertEqual("Ana Souza", estado["piloto_em_uso"])
+        self.assertEqual("Itau", estado["empresa_em_uso"])
         self.assertIn("-p1", estado["sessao"])
 
     def test_form_without_the_page_token_is_refused(self):

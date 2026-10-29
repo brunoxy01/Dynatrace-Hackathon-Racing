@@ -58,7 +58,7 @@ sem enviar dados à tenant, abra dois terminais na raiz do repositório:
 
 ```powershell
 # Terminal 1: somente decodificar e imprimir eventos de teste
-python ams2_collector.py --source udp --bind 127.0.0.1 --port 15606 --rig-id ensaio-udp --dry-run
+python ams2_collector.py --source udp --bind 127.0.0.1 --port 15606 --dry-run
 ```
 
 ```powershell
@@ -133,22 +133,22 @@ python prepare_capture.py
 ## Preparar os simuladores para o evento
 
 1. No AMS2, habilite a saída UDP e selecione o protocolo Project CARS 2. Confira frequência e porta no local; o coletor usa 5606 por padrão.
-2. Execute um coletor por simulador, com `rig-id` diferente. Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
+2. Execute um coletor por simulador; cada PC é identificado sozinho (`rig.id` automático, que não aparece nas telas). Confirme a chegada dos pacotes na máquina receptora e teste rede/firewall no local.
 3. Antes de cada nova participação, preencha `driver_name` e `company_name` no `racing.ini` (ou `--driver-name` / `--company-name`) e reinicie o coletor, que gera nova `session.id`. O AMS2 não pergunta o nome do piloto: sem isso, todos aparecem com o nome da conta Steam do rig, e o mesmo perfil sem separar sessões mistura participantes.
 4. Abra **Grail · histórico e ao vivo** e selecione o período desejado. O padrão são os últimos 7 dias; o seletor Strato oferece horas, hoje, ontem e datas personalizadas. Intervalos terminando em agora atualizam a cada 30 segundos; períodos fechados podem ser atualizados manualmente. A consulta retorna até 10.000 eventos recentes no intervalo e avisa quando atinge esse limite. Rankings representam essa amostra; para classificar todo o evento ainda é necessário persistir/agregar resultados no backend.
 
 Primeiro, teste sem ingestão:
 
 ```powershell
-python ams2_collector.py --source udp --port 5606 --rig-id rig-01 --rig-name "Simulador 1" --dry-run
+python ams2_collector.py --source udp --port 5606 --company-name "Dynatrace" --dry-run
 ```
 
 Para ingerir, este coletor usa Classic API token com escopo `bizevents.ingest` e Environment API v2. Configure `DT_ENV_URL` com a URL do ambiente classic (`https://SEU_AMBIENTE.live.dynatrace.com`) e `DT_API_TOKEN` com seu token apenas na sessão do terminal. Não salve credenciais no repositório. Depois execute:
 
 ```powershell
-python ams2_collector.py --source udp --port 5606 --rig-id rig-01 --rig-name "Simulador 1"
+python ams2_collector.py --source udp --port 5606 --company-name "Dynatrace"
 # Ensaio de ingestão com o dump, sem o jogo
-python ams2_collector.py --source replay --file captura.txt --speed 1 --rig-id ensaio-01 --rig-name "Ensaio"
+python ams2_collector.py --source replay --file captura.txt --speed 1 --company-name "Teste"
 ```
 
 O envio real consome ingestão. O coletor registra falhas HTTP, mas não possui fila persistente/reenvio. Valide isso antes de usá-lo como registro oficial da competição. Não use `--loop` para resultados competitivos; mantenha ensaios separados do evento.
@@ -179,7 +179,7 @@ Para os rigs Windows, use o pacote de duplo clique em [rig/](rig/README.md). Par
 ```bash
 python3 otel/endpoint_falso.py                                        # terminal 1
 ./dynatrace-otel-collector --config otel/otelcol-teste-local.yaml     # terminal 2
-python3 ams2_collector.py --source udp --port 15606 --rig-id ensaio --sink otlp  # terminal 3
+python3 ams2_collector.py --source udp --port 15606 --sink otlp  # terminal 3
 python3 cars2_telemetry_generator.py --host 127.0.0.1 --port 15606 --speed 20    # terminal 4
 ```
 

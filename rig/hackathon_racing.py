@@ -116,10 +116,12 @@ def titulo_da_janela(texto: str) -> None:
 
 def carregar_config(caminho: Path) -> dict:
     """racing.ini (secao [rig]) com fallback para variaveis de ambiente."""
+    # rig_id/rig_name sairam: o simulador e' identificado sozinho
+    # (ams2_collector.id_do_simulador). Se um racing.ini antigo ainda tiver as
+    # chaves, elas sao ignoradas. O piloto e' nome + empresa.
     valores = {
-        "rig_id": os.environ.get("RIG_ID", "rig-01"),
-        "rig_name": os.environ.get("RIG_NAME", "Simulador 1"),
         "driver_name": os.environ.get("RACING_DRIVER", ""),
+        "company_name": os.environ.get("RACING_COMPANY", ""),
         "dt_env_url": os.environ.get("DT_ENV_URL", ""),
         "dt_api_token": os.environ.get("DT_API_TOKEN", ""),
         "ams2_port": os.environ.get("AMS2_PORT", "5606"),
@@ -279,6 +281,8 @@ def main() -> int:
     parser.add_argument("--teste", action="store_true", help="sobe o gerador no lugar do jogo")
     parser.add_argument("--variacao", type=float, default=0.0, help="[teste] variacao percentual de ritmo")
     parser.add_argument("--dry-run", action="store_true", help="imprime os eventos em vez de enviar")
+    parser.add_argument("--gravar", default=None,
+                        help="diagnostico: grava os pacotes crus do jogo neste arquivo (formato da captura.txt)")
     args = parser.parse_args()
 
     # Handlers explicitos: shells lancando em background deixam SIGINT herdado como
@@ -292,11 +296,12 @@ def main() -> int:
     config = carregar_config(args.config)
     porta = int(config["ams2_port"])
 
-    titulo_da_janela(f"Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']}")
+    titulo_da_janela(f"Hackathon Racing {ams2_collector.VERSAO}")
     print("=" * 58)
-    print(f"  Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']} ({config['rig_name']})")
-    if config["driver_name"]:
-        print(f"  Piloto: {config['driver_name']}")
+    print(f"  Hackathon Racing {ams2_collector.VERSAO}")
+    if config["driver_name"] or config["company_name"]:
+        print(f"  Piloto: {config['driver_name'] or '(perfil do AMS2)'}"
+              f"{' - ' + config['company_name'] if config['company_name'] else ''}")
     print(f"  UDP do AMS2: porta {porta}   |   destinos: {config['sink']}")
     print("=" * 58)
 
@@ -333,8 +338,10 @@ def main() -> int:
     # Reaproveita o loop ja' testado do ams2_collector, montando o mesmo Namespace
     # que o CLI dele produz.
     opcoes = argparse.Namespace(
-        source="udp", rig_id=config["rig_id"], rig_name=config["rig_name"],
-        driver_name=config["driver_name"] or None,
+        # Simulador identificado sozinho: nada para o operador configurar.
+        source="udp", rig_id=ams2_collector.id_do_simulador(), rig_name="",
+        driver_name=config["driver_name"] or None, company_name=config["company_name"] or None,
+        gravar=args.gravar,
         bind="0.0.0.0", port=porta,
         batch_size=int(config["batch_size"]), flush_interval=float(config["flush_interval"]),
         sample_hz=float(config["sample_hz"]),
@@ -345,16 +352,16 @@ def main() -> int:
     ingest_url = opcoes.endpoint.rstrip("/") + "/api/v2/bizevents/ingest" if opcoes.endpoint else None
 
     # O coletor nasce aqui (e nao dentro do run_udp) para o piloto poder ser
-    # trocado com o laco rodando: editar driver_name no racing.ini - a mao ou
-    # pelo painel no navegador - vale em ate' 1 segundo, sem reiniciar.
+    # trocado com o laco rodando: editar driver_name/company_name no racing.ini
+    # - a mao ou pelo painel no navegador - vale em ate' 1 segundo.
     coletor = ams2_collector.Collector(opcoes.rig_id, opcoes.rig_name, f"live-{int(time.time())}", "real",
-                                       opcoes.driver_name, opcoes.sample_hz)
-    painel_piloto.VigiaDoIni(args.config, coletor.trocar_piloto, opcoes.driver_name).iniciar()
+                                       opcoes.driver_name, opcoes.sample_hz, opcoes.company_name)
+    painel_piloto.VigiaDoIni(args.config, coletor.trocar_piloto, (opcoes.driver_name, opcoes.company_name)).iniciar()
     porta_painel = int(config["painel_porta"] or 0)
     if porta_painel:
         url = painel_piloto.iniciar_painel(args.config, coletor.estado, porta_painel)
         if url:
-            print(f"[i] Trocar o piloto: {url}  (ou edite driver_name no racing.ini)")
+            print(f"[i] Trocar o piloto: {url}  (ou edite driver_name/company_name no racing.ini)")
             if config["abrir_painel"].strip().lower() not in ("nao", "não", "no", "0", "false"):
                 webbrowser.open(url)
 
