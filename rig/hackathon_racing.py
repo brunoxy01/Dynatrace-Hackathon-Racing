@@ -27,6 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 # Em desenvolvimento os modulos ficam na raiz do repo, um nivel acima. No
@@ -38,6 +39,7 @@ for path in (str(REPO), str(BASE)):
         sys.path.insert(0, path)
 
 import ams2_collector  # noqa: E402
+import painel_piloto  # noqa: E402
 
 # Pasta onde o executavel foi colocado (nao a pasta temporaria do PyInstaller).
 HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -131,6 +133,10 @@ def carregar_config(caminho: Path) -> dict:
         "flush_interval": os.environ.get("RACING_FLUSH_INTERVAL", "0.5"),
         # Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas.
         "sample_hz": os.environ.get("RACING_SAMPLE_HZ", str(ams2_collector.DEFAULT_SAMPLE_HZ)),
+        # Painel no navegador para trocar o piloto (http://127.0.0.1:8765).
+        # 0 desliga o painel; abrir_painel = nao sobe sem abrir o navegador.
+        "painel_porta": os.environ.get("RACING_PAINEL_PORTA", str(painel_piloto.PORTA_PADRAO)),
+        "abrir_painel": os.environ.get("RACING_ABRIR_PAINEL", "sim"),
     }
     if caminho.exists():
         parser = configparser.ConfigParser()
@@ -338,8 +344,22 @@ def main() -> int:
     )
     ingest_url = opcoes.endpoint.rstrip("/") + "/api/v2/bizevents/ingest" if opcoes.endpoint else None
 
+    # O coletor nasce aqui (e nao dentro do run_udp) para o piloto poder ser
+    # trocado com o laco rodando: editar driver_name no racing.ini - a mao ou
+    # pelo painel no navegador - vale em ate' 1 segundo, sem reiniciar.
+    coletor = ams2_collector.Collector(opcoes.rig_id, opcoes.rig_name, f"live-{int(time.time())}", "real",
+                                       opcoes.driver_name, opcoes.sample_hz)
+    painel_piloto.VigiaDoIni(args.config, coletor.trocar_piloto, opcoes.driver_name).iniciar()
+    porta_painel = int(config["painel_porta"] or 0)
+    if porta_painel:
+        url = painel_piloto.iniciar_painel(args.config, coletor.estado, porta_painel)
+        if url:
+            print(f"[i] Trocar o piloto: {url}  (ou edite driver_name no racing.ini)")
+            if config["abrir_painel"].strip().lower() not in ("nao", "não", "no", "0", "false"):
+                webbrowser.open(url)
+
     try:
-        return ams2_collector.run_udp(opcoes, ams2_collector.Dispatcher(opcoes, ingest_url))
+        return ams2_collector.run_udp(opcoes, ams2_collector.Dispatcher(opcoes, ingest_url), coletor)
     finally:
         if collector is not None:
             print("[..] encerrando o collector")

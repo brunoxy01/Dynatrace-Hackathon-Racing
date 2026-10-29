@@ -298,6 +298,52 @@ class SectorOrderTests(unittest.TestCase):
         self.assertEqual((None, None, None), self._volta([(3, 1, 10.0, 1.0), (3, 2, 11.0, 0.1), (4, 0, 0.05, 0.05)]))
 
 
+class DriverSwapTests(unittest.TestCase):
+    """Troca do piloto com o coletor rodando (racing.ini ou painel)."""
+
+    def setUp(self):
+        self.pacotes = _pacotes_da_captura()
+        self.telemetria = next(raw for raw in self.pacotes if decode_header(raw).packet_type == 0)
+        self.coletor = Collector("rig-01", "Simulador 1", "live-1", "real", "Bruno Lima")
+        # Captura inteira: o jogo ja' anunciou a volta de 104,015 s do Bruno.
+        for raw in self.pacotes:
+            self.coletor.handle_packet(raw)
+        self.assertEqual(104.015, self.coletor.state.last_lap_s)
+
+    def test_new_driver_gets_a_new_session(self):
+        antes = self.coletor.handle_packet(self.telemetria)
+        self.coletor.trocar_piloto("Ana Souza")
+        depois = self.coletor.handle_packet(self.telemetria)
+        self.assertEqual("Bruno Lima", antes["driver_name"])
+        self.assertEqual("Ana Souza", depois["driver_name"])
+        self.assertNotEqual(antes["session.id"], depois["session.id"])
+        self.assertTrue(depois["sample.id"].endswith("|1"), "a sessao nova recomeca a sequencia")
+
+    def test_previous_driver_lap_time_does_not_leak_to_the_new_one(self):
+        self.coletor.state.best_lap_s = 103.5
+        self.coletor.trocar_piloto("Ana Souza")
+        evento = self.coletor.handle_packet(self.telemetria)
+        self.assertIsNone(evento["last_lap_s"], "104,015 e' do Bruno, nao da Ana")
+        self.assertIsNone(evento["last_lap_s1"])
+        self.assertIsNone(evento["best_lap_s"])
+        # A Ana fecha a primeira volta dela: o tempo novo aparece.
+        anuncio = bytearray(next(raw for raw in self.pacotes if decode_header(raw).packet_type == 7))
+        struct.pack_into("<f", anuncio, 20, 99.5)
+        self.coletor.handle_packet(bytes(anuncio))
+        self.assertEqual(99.5, self.coletor.handle_packet(self.telemetria)["last_lap_s"])
+
+    def test_blank_name_falls_back_to_the_game_profile(self):
+        self.coletor.trocar_piloto("")
+        evento = self.coletor.handle_packet(self.telemetria)
+        self.assertEqual(self.coletor.state.driver_name, evento["driver_name"])
+        self.assertEqual("perfil do jogo", self.coletor.estado()["origem"])
+
+    def test_same_name_keeps_the_session(self):
+        sessao = self.coletor.session_id
+        self.coletor.trocar_piloto("Bruno Lima")
+        self.assertEqual(sessao, self.coletor.session_id)
+
+
 class _Contador(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive
     conexoes = set()

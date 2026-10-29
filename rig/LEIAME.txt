@@ -6,6 +6,7 @@ O que tem nesta pasta
 ---------------------
   HackathonRacing.exe   >>> O UNICO PROGRAMA QUE VOCE ABRE <<<
   racing.ini            >>> O UNICO ARQUIVO QUE VOCE EDITA <<<
+  Trocar piloto.url     reabre o painel de troca de piloto (veja o PASSO 4)
   captura.txt           volta gravada, usada no modo de teste
   motor\               pecas internas. NAO ABRA NADA AQUI DENTRO.
 
@@ -55,15 +56,26 @@ Sem isso o jogo nao transmite nada e a tela fica parada em zero.
 PASSO 4 - o nome do piloto
 --------------------------
 O AMS2 nao pergunta o nome do piloto: ele usa o da conta Steam do PC
-(algo como "plinioaugusto01"). Como o rig e' compartilhado, escreva no
-racing.ini quem esta na cadeira:
+(algo como "plinioaugusto01"). Como o rig e' compartilhado, informe quem
+esta na cadeira. NAO precisa fechar o HackathonRacing.exe para trocar.
 
+Jeito facil - o painel "Trocar piloto":
+  Ao abrir o HackathonRacing.exe, o navegador abre sozinho uma pagina
+  (http://127.0.0.1:8765). Digite o nome, clique em "Trocar piloto" e
+  pronto: vale em ate' 1 segundo. Fechou a aba? Duplo clique em
+  "Trocar piloto.url" reabre.
+
+Ou pelo racing.ini:
   driver_name  = Bruno Lima
+  Salve o arquivo com o programa aberto: vale em ate' 1 segundo.
 
-E' isso que aparece no painel. Basta salvar o racing.ini e reabrir o
-HackathonRacing.exe entre um cliente e o proximo.
+O que acontece na troca:
+  - o piloto novo ganha uma sessao propria no painel do Dynatrace;
+  - a volta que estiver em andamento fica com o piloto novo;
+  - o ultimo tempo e o recorde do piloto anterior NAO aparecem como sendo
+    do novo: somem ate' ele completar a primeira volta dele.
 
-Se preferir deixar em branco, o nome vem direto do perfil do AMS2.
+Se deixar o nome em branco, vale o nome do perfil do AMS2.
 
 
 PASSO 5 - no dia
@@ -85,6 +97,10 @@ Se der problema
 
 "o collector nao subiu"
     token errado ou sem permissao. Fale com o Bruno.
+
+"painel de troca de piloto nao subiu na porta 8765"
+    outro programa usa essa porta. O rig funciona normalmente; troque o
+    piloto pelo racing.ini, ou mude painel_porta (ex.: 8766) no racing.ini.
 
 O contador nao sobe com o jogo aberto
     o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista

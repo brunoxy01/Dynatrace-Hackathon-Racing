@@ -60,7 +60,7 @@ from ams2_protocol import (
 # Versao exibida no console do rig. O workflow do pacote (pacote-rig.yml)
 # troca esta linha pela tag da release antes de gerar o executavel; o valor
 # aqui vale para quem roda direto do repositorio.
-VERSAO = "v1.11.2"
+VERSAO = "v1.11.3"
 
 EVENT_TYPE = "racing.telemetry"
 EVENT_PROVIDER = "hackathon.racing.ams2"
@@ -273,6 +273,61 @@ class Collector:
         # corte exato em 100 ms deixaria passar ora 1, ora 2 quadros em cada 3.
         self._intervalo = 0.9 / sample_hz if sample_hz > 0 else 0.0
         self._ultimo_envio: Optional[float] = None
+        # Troca de piloto com o coletor rodando (racing.ini ou painel). A trava
+        # garante que nenhuma amostra saia com o piloto novo e a sessao velha.
+        self._trava = threading.Lock()
+        self._trocas = 0
+        # Tempos que o jogo herdou do piloto anterior e nao podem aparecer como
+        # sendo do novo: ficam ocultos ate' o jogo anunciar um valor diferente.
+        self._ocultar_ultima: Optional[float] = None
+        self._ocultar_melhor: Optional[float] = None
+
+    def trocar_piloto(self, nome: Optional[str]) -> None:
+        """Passa a creditar as amostras a `nome` (None = nome do perfil do jogo).
+
+        Abre uma sessao nova, para as voltas de cada piloto nao se misturarem no
+        app, e oculta o ultimo tempo e o recorde que o jogo ainda mostra - sao
+        do piloto anterior. A volta em andamento fica com o piloto novo: e' quem
+        esta' no carro quando ela fechar."""
+        nome = (nome or "").strip() or None
+        with self._trava:
+            if nome == self.driver_name:
+                return
+            self._trocas += 1
+            self.driver_name = nome
+            self.session_id = f"live-{int(time.time())}-p{self._trocas}"
+            self._sample_seq = 0
+            self._ocultar_ultima = self.state.last_lap_s
+            self._ocultar_melhor = self.state.best_lap_s
+        print(f"\n[i] Piloto agora: {nome or 'nome do perfil do jogo'} (sessao nova {self.session_id})", flush=True)
+
+    def piloto_em_uso(self) -> Optional[str]:
+        """Nome que vai nas amostras: o do racing.ini/painel ou o do perfil do jogo."""
+        return self.driver_name or (self.state.driver_name or "").strip() or None
+
+    def estado(self) -> dict:
+        """Resumo para o painel de troca de piloto."""
+        return {
+            "rig_id": self.rig_id,
+            "rig_name": self.rig_name,
+            "versao": VERSAO,
+            "piloto_em_uso": self.piloto_em_uso(),
+            "origem": "racing.ini" if self.driver_name else ("perfil do jogo" if self.state.driver_name else None),
+            "sessao": self.session_id,
+        }
+
+    def _ocultar_herdados(self, evento: dict) -> None:
+        if self._ocultar_ultima is not None:
+            if self.state.last_lap_s == self._ocultar_ultima:
+                for campo in ("last_lap_s", "last_lap_s1", "last_lap_s2", "last_lap_s3"):
+                    evento[campo] = None
+            else:
+                self._ocultar_ultima = None
+        if self._ocultar_melhor is not None:
+            if self.state.best_lap_s == self._ocultar_melhor:
+                evento["best_lap_s"] = None
+            else:
+                self._ocultar_melhor = None
 
     def handle_packet(self, raw: bytes, agora: Optional[float] = None) -> Optional[dict]:
         """Processa um pacote UDP cru; retorna um evento pronto quando um
@@ -304,12 +359,15 @@ class Collector:
                     return None
                 self._ultimo_envio = instante
             telemetry = decode_telemetry(raw)
-            self._sample_seq += 1
-            return build_event(
-                self.rig_id, self.rig_name, self.session_id, self.state,
-                telemetry, self._last_timings, self.source_label, self._sample_seq,
-                self.driver_name,
-            )
+            with self._trava:
+                self._sample_seq += 1
+                evento = build_event(
+                    self.rig_id, self.rig_name, self.session_id, self.state,
+                    telemetry, self._last_timings, self.source_label, self._sample_seq,
+                    self.driver_name,
+                )
+                self._ocultar_herdados(evento)
+            return evento
         return None
 
 
@@ -445,9 +503,11 @@ class Dispatcher:
             fila.drenar()
 
 
-def run_udp(args, dispatcher: "Dispatcher") -> int:
-    collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
-                          args.driver_name, args.sample_hz)
+def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = None) -> int:
+    """`collector` pronto pode vir de fora: o rig o cria antes para o painel e a
+    vigia do racing.ini poderem trocar o piloto com o laco rodando."""
+    collector = collector or Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
+                                       args.driver_name, args.sample_hz)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
     print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
