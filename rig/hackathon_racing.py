@@ -5,10 +5,12 @@ Um duplo clique liga tudo o que precisa rodar dentro do simulador:
 
   1. sobe o OTel Collector (processo filho) com a config de producao;
   2. espera o receiver OTLP responder;
-  3. escuta o UDP do Automobilista 2, decodifica e entrega a telemetria.
+  3. abre a tela "Trocar piloto" (nome e empresa de quem esta na cadeira);
+  4. escuta o UDP do Automobilista 2, decodifica e entrega a telemetria.
 
 Configuracao em `racing.ini`, ao lado do executavel. Sem ini, usa variaveis de
-ambiente. Ctrl+C derruba o collector junto.
+ambiente. O piloto NAO vem do ini: vem da tela, e a ultima escolha fica em
+piloto-atual.json. Ctrl+C derruba o collector junto.
 
 Modo de ensaio (`--teste`): sobe tambem o gerador, que reenvia a captura real
 por UDP fazendo o papel do jogo. Serve para validar a cadeia inteira sem o AMS2.
@@ -27,6 +29,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 # Em desenvolvimento os modulos ficam na raiz do repo, um nivel acima. No
@@ -38,6 +41,7 @@ for path in (str(REPO), str(BASE)):
         sys.path.insert(0, path)
 
 import ams2_collector  # noqa: E402
+import painel_piloto  # noqa: E402
 
 # Pasta onde o executavel foi colocado (nao a pasta temporaria do PyInstaller).
 HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -117,7 +121,7 @@ def carregar_config(caminho: Path) -> dict:
     valores = {
         "rig_id": os.environ.get("RIG_ID", "rig-01"),
         "rig_name": os.environ.get("RIG_NAME", "Simulador 1"),
-        "driver_name": os.environ.get("RACING_DRIVER", ""),
+        # driver_name saiu: o piloto (nome + empresa) vem da tela "Trocar piloto".
         "dt_env_url": os.environ.get("DT_ENV_URL", ""),
         "dt_api_token": os.environ.get("DT_API_TOKEN", ""),
         "ams2_port": os.environ.get("AMS2_PORT", "5606"),
@@ -131,6 +135,8 @@ def carregar_config(caminho: Path) -> dict:
         "flush_interval": os.environ.get("RACING_FLUSH_INTERVAL", "0.5"),
         # Amostras de telemetria por segundo (o jogo manda ~20). 0 = todas.
         "sample_hz": os.environ.get("RACING_SAMPLE_HZ", str(ams2_collector.DEFAULT_SAMPLE_HZ)),
+        # Porta da tela "Trocar piloto" (so' 127.0.0.1). 0 desliga a tela.
+        "painel_porta": os.environ.get("RACING_PAINEL_PORTA", str(painel_piloto.PORTA_PADRAO)),
     }
     if caminho.exists():
         parser = configparser.ConfigParser()
@@ -285,12 +291,14 @@ def main() -> int:
 
     config = carregar_config(args.config)
     porta = int(config["ams2_port"])
+    arquivo_piloto = HERE / painel_piloto.ARQUIVO
+    piloto_salvo, empresa_salva = painel_piloto.ler_piloto_salvo(arquivo_piloto)
 
     titulo_da_janela(f"Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']}")
     print("=" * 58)
     print(f"  Hackathon Racing {ams2_collector.VERSAO} - {config['rig_id']} ({config['rig_name']})")
-    if config["driver_name"]:
-        print(f"  Piloto: {config['driver_name']}")
+    if piloto_salvo or empresa_salva:
+        print(f"  Piloto: {piloto_salvo or 'nome do perfil do jogo'}{' - ' + empresa_salva if empresa_salva else ''}")
     print(f"  UDP do AMS2: porta {porta}   |   destinos: {config['sink']}")
     print("=" * 58)
 
@@ -328,7 +336,7 @@ def main() -> int:
     # que o CLI dele produz.
     opcoes = argparse.Namespace(
         source="udp", rig_id=config["rig_id"], rig_name=config["rig_name"],
-        driver_name=config["driver_name"] or None,
+        driver_name=piloto_salvo, company_name=empresa_salva,
         bind="0.0.0.0", port=porta,
         batch_size=int(config["batch_size"]), flush_interval=float(config["flush_interval"]),
         sample_hz=float(config["sample_hz"]),
@@ -338,8 +346,23 @@ def main() -> int:
     )
     ingest_url = opcoes.endpoint.rstrip("/") + "/api/v2/bizevents/ingest" if opcoes.endpoint else None
 
+    # O coletor nasce aqui (e nao dentro do run_udp) para a tela falar com ele:
+    # a troca de piloto chega sem reiniciar nada. O ultimo piloto salvo vale
+    # desde o primeiro quadro.
+    coletor = ams2_collector.Collector(opcoes.rig_id, opcoes.rig_name, f"live-{int(time.time())}", "real",
+                                       piloto_salvo, opcoes.sample_hz, empresa_salva)
+    porta_tela = int(config["painel_porta"] or 0)
+    if porta_tela:
+        try:
+            url = painel_piloto.iniciar_painel(arquivo_piloto, coletor.estado, coletor.definir_piloto, porta_tela)
+            print(f"[i] Tela do piloto: {url}  (o navegador abre sozinho; o atalho 'Trocar piloto' reabre)")
+            webbrowser.open(url)
+        except OSError as erro:
+            print(f"[!!] a tela do piloto nao subiu na porta {porta_tela} ({erro}). O rig segue com o ultimo piloto salvo;")
+            print("     feche o programa que usa a porta, ou mude painel_porta no racing.ini.")
+
     try:
-        return ams2_collector.run_udp(opcoes, ams2_collector.Dispatcher(opcoes, ingest_url))
+        return ams2_collector.run_udp(opcoes, ams2_collector.Dispatcher(opcoes, ingest_url), coletor)
     finally:
         if collector is not None:
             print("[..] encerrando o collector")

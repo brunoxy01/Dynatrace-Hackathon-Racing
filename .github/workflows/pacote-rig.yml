@@ -29,7 +29,7 @@ jobs:
         run: pip install pyinstaller==6.11.1
 
       - name: Testes
-        run: python -m unittest test_collector test_cars2_telemetry test_protocol test_replay
+        run: python -m unittest test_collector test_cars2_telemetry test_protocol test_replay test_painel_piloto
 
       # Versao no console do rig: a tag da release (ex.: v1.10.8) entra no
       # codigo antes do build. Sem tag (workflow_dispatch), fica o valor do repo.
@@ -45,9 +45,13 @@ jobs:
         run: >
           pyinstaller --onefile --name HackathonRacing
           --paths .
+          --paths rig
           --hidden-import ams2_collector
           --hidden-import ams2_protocol
           --hidden-import cars2_telemetry_generator
+          --hidden-import painel_piloto
+          --add-data "dynatrace-hackathon-racing/ui/assets/racing-logo.png;assets"
+          --add-data "dynatrace-hackathon-racing/ui/assets/racing-icon.png;assets"
           rig/hackathon_racing.py
 
       - name: Baixar o OTel Collector da Dynatrace
@@ -86,9 +90,9 @@ jobs:
           [rig]
           rig_id = rig-01
           rig_name = Simulador 1
-          # Quem esta na cadeira. Preenchido aqui, vence o nome do perfil do
-          # AMS2 (que e' o da conta Steam). Em branco, o nome vem do jogo.
-          driver_name =
+          # O piloto (nome e empresa) NAO e' configurado aqui: e' escolhido na
+          # tela "Trocar piloto", que abre sozinha no navegador. Porta da tela:
+          painel_porta = 8765
           ams2_port = 5606
           # bizevents (padrao), otlp ou both. "both" dobra o volume ingerido.
           # O caminho OTLP depende de o token ter logs.ingest; no tenant do
@@ -103,6 +107,8 @@ jobs:
           dt_env_url = https://bwm98081.live.dynatrace.com
           dt_api_token = $env:DT_API_TOKEN_EVENTO
           "@ | Set-Content -Encoding UTF8 pacote/racing.ini
+          # Atalho para reabrir a tela de troca de piloto se a aba for fechada.
+          "[InternetShortcut]`r`nURL=http://127.0.0.1:8765/`r`n" | Set-Content -NoNewline -Encoding ASCII "pacote/Trocar piloto.url"
           Compress-Archive -Path pacote/* -DestinationPath HackathonRacing-rig-windows.zip -Force
 
       - uses: actions/upload-artifact@v4

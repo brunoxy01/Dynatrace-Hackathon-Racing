@@ -6,6 +6,7 @@ O que tem nesta pasta
 ---------------------
   HackathonRacing.exe   >>> O UNICO PROGRAMA QUE VOCE ABRE <<<
   racing.ini            >>> O UNICO ARQUIVO QUE VOCE EDITA <<<
+  Trocar piloto.url     reabre a tela de troca de piloto (veja o PASSO 4)
   captura.txt           volta gravada, usada no modo de teste
   motor\               pecas internas. NAO ABRA NADA AQUI DENTRO.
 
@@ -22,7 +23,9 @@ Abra o racing.ini no Bloco de Notas e preencha:
                                    PRECISA SER DIFERENTE EM CADA PC.
   dt_env_url    = https://SEU_AMBIENTE.live.dynatrace.com
   dt_api_token  = dt0c01....
-  driver_name   =               <- veja o PASSO 4
+
+O nome do piloto e a empresa NAO ficam no racing.ini: veja o PASSO 4.
+(Um driver_name que tenha sobrado de um racing.ini antigo e' ignorado.)
 
 A URL e o token vem com o Bruno. Sem eles nada chega no Dynatrace.
 NAO mande o racing.ini preenchido por e-mail ou WhatsApp: ele tem o token.
@@ -52,18 +55,31 @@ No jogo: Options > System
 Sem isso o jogo nao transmite nada e a tela fica parada em zero.
 
 
-PASSO 4 - o nome do piloto
---------------------------
+PASSO 4 - o piloto: nome e empresa (tela "Trocar piloto")
+---------------------------------------------------------
 O AMS2 nao pergunta o nome do piloto: ele usa o da conta Steam do PC
-(algo como "plinioaugusto01"). Como o rig e' compartilhado, escreva no
-racing.ini quem esta na cadeira:
+(algo como "plinioaugusto01"). Como o rig e' compartilhado, informe quem
+esta na cadeira na tela "Trocar piloto":
 
-  driver_name  = Bruno Lima
+  - ela abre sozinha no navegador quando o HackathonRacing.exe liga
+    (endereco http://127.0.0.1:8765). Fechou a aba? Duplo clique em
+    "Trocar piloto.url";
+  - digite o nome do piloto e a empresa e clique em "Confirmar piloto".
 
-E' isso que aparece no painel. Basta salvar o racing.ini e reabrir o
-HackathonRacing.exe entre um cliente e o proximo.
+NAO precisa fechar nem reabrir o HackathonRacing.exe.
 
-Se preferir deixar em branco, o nome vem direto do perfil do AMS2.
+Quando o nome novo passa a valer:
+  - na proxima volta: quando o carro cruzar a linha de chegada, ou quando
+    a volta for reiniciada no jogo (restart, volta aos boxes);
+  - a volta que estiver em andamento continua com o piloto anterior, e o
+    tempo dela fica com ele;
+  - o ultimo tempo e o recorde do piloto anterior NAO aparecem como sendo
+    do novo.
+A tela mostra quem esta no carro agora e quem e' o proximo piloto.
+
+O ultimo piloto escolhido fica salvo (arquivo piloto-atual.json nesta
+pasta): se o programa for fechado e aberto de novo, ele continua valendo
+ate' alguem trocar na tela.
 
 
 PASSO 5 - no dia
@@ -85,6 +101,15 @@ Se der problema
 
 "o collector nao subiu"
     token errado ou sem permissao. Fale com o Bruno.
+
+"a tela do piloto nao subiu na porta 8765"
+    outro programa usa essa porta. O rig segue enviando com o ultimo piloto
+    salvo. Feche o outro programa, ou mude painel_porta (ex.: 8766) no
+    racing.ini e reabra o HackathonRacing.exe.
+
+Troquei o piloto e o nome nao mudou no Dynatrace
+    normal ate' a volta acabar: o nome novo vale a partir da proxima volta
+    (ou quando a volta for reiniciada no jogo).
 
 O contador nao sobe com o jogo aberto
     o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista

@@ -1,4 +1,5 @@
 import json
+import struct
 import threading
 import time
 from datetime import datetime
@@ -203,6 +204,115 @@ class SectorOrderTests(unittest.TestCase):
     def test_out_of_order_sector_jump_drops_the_lap_instead_of_inventing(self):
         # Reinicio/box no meio da volta: S3 -> S2 -> S3 -> linha. Sem setores.
         self.assertEqual((None, None, None), self._volta([(3, 1, 10.0, 1.0), (3, 2, 11.0, 0.1), (4, 0, 0.05, 0.05)]))
+
+
+def _primeiro_pacote(tipo: int) -> bytes:
+    with open("captura.txt", encoding="utf-8") as f:
+        for linha in f:
+            partes = linha.rstrip("\n").split("\t")
+            if len(partes) == 4:
+                bruto = bytes.fromhex(partes[3])
+                if len(bruto) >= 12 and bruto[10] == tipo:
+                    return bruto
+    raise AssertionError(f"captura sem pacote do tipo {tipo}")
+
+
+def _timings(volta: int, setor: int, cronometro, no_setor=0.5) -> bytes:
+    """Pacote 3 real da captura com volta, setor e cronometro do jogador trocados."""
+    bruto = bytearray(_primeiro_pacote(3))
+    local = struct.unpack_from("<H", bruto, 1057)[0]
+    off = 33 + local * 32
+    bruto[off + 15] = (bruto[off + 15] & 0xF8) | setor
+    bruto[off + 21] = volta
+    struct.pack_into("<f", bruto, off + 22, -1.0 if cronometro is None else cronometro)
+    struct.pack_into("<f", bruto, off + 26, no_setor)
+    return bytes(bruto)
+
+
+def _tempo_anunciado(ultima: float, melhor: float) -> bytes:
+    """Pacote 7 real com a ultima volta e o recorde do jogador trocados."""
+    local = struct.unpack_from("<H", _primeiro_pacote(3), 1057)[0]
+    bruto = bytearray(_primeiro_pacote(7))
+    off = 16 + local * 32
+    struct.pack_into("<f", bruto, off, melhor)
+    struct.pack_into("<f", bruto, off + 4, ultima)
+    return bytes(bruto)
+
+
+class DriverSwapTests(unittest.TestCase):
+    """O piloto escolhido na tela so' passa a ser reportado quando uma volta
+    comeca ou e' reiniciada no jogo."""
+
+    def setUp(self):
+        self.coletor = Collector("rig-01", "Simulador 1", "live-1", "real", "Ana", 0.0, "Itau")
+        self.quadro = _pacote_telemetria()
+
+    def _pacote(self, bruto: bytes, t: float):
+        return self.coletor.handle_packet(bruto, t)
+
+    def _quem(self, t: float) -> tuple:
+        e = self.coletor.handle_packet(self.quadro, t)
+        return e["driver_name"], e["company_name"], e["session.id"]
+
+    def test_company_travels_in_every_event(self):
+        self.assertEqual(("Ana", "Itau", "live-1"), self._quem(0.0))
+
+    def test_new_driver_waits_for_the_lap_to_restart(self):
+        self._pacote(_timings(3, 0, 10.0), 0.0)
+        self._pacote(_timings(3, 1, 30.0), 1.0)
+        self.coletor.definir_piloto("  Bruno  ", "Dynatrace")
+        self._pacote(_timings(3, 1, 31.0), 2.0)
+        self.assertEqual(("Ana", "Itau", "live-1"), self._quem(2.1), "no meio da volta nada muda")
+        self.assertEqual("Bruno", self.coletor.estado()["proximo"]["piloto"])
+        self._pacote(_timings(3, 0, 0.1), 3.0)  # cronometro zerou fora do S3: reinicio
+        self.assertEqual(("Bruno", "Dynatrace", "live-1-p1"), self._quem(3.1))
+        self.assertIsNone(self.coletor.estado()["proximo"])
+
+    def test_closed_lap_stays_with_the_previous_driver(self):
+        self._pacote(_timings(3, 2, 100.0), 0.0)
+        self.coletor.definir_piloto("Bruno", "Dynatrace")
+        self._pacote(_timings(4, 0, 0.05), 1.0)  # linha
+        self.assertEqual(("Ana", "Itau", "live-1"), self._quem(1.1), "espera o tempo da volta da Ana")
+        self._pacote(_tempo_anunciado(100.5, 100.5), 1.4)
+        ana = self.coletor.handle_packet(self.quadro, 1.5)
+        self.assertEqual(("Ana", 100.5), (ana["driver_name"], ana["last_lap_s"]),
+                         "a volta sai na sessao da Ana, senao some do placar")
+        self._pacote(_timings(4, 0, 1.4), 2.4)
+        bruno = self.coletor.handle_packet(self.quadro, 2.5)
+        self.assertEqual(("Bruno", "live-1-p1"), (bruno["driver_name"], bruno["session.id"]))
+        self.assertIsNone(bruno["last_lap_s"], "o tempo da Ana nao aparece como do Bruno")
+        self.assertIsNone(bruno["best_lap_s"])
+
+    def test_without_a_lap_time_the_swap_happens_after_a_few_seconds(self):
+        self._pacote(_timings(3, 2, 100.0), 0.0)
+        self.coletor.definir_piloto("Bruno", "Dynatrace")
+        self._pacote(_timings(4, 0, 0.05), 1.0)  # volta invalida: o jogo nao anuncia tempo
+        self._pacote(_timings(4, 0, 2.0), 3.0)
+        self.assertEqual("Ana", self._quem(3.1)[0])
+        self._pacote(_timings(4, 0, 3.1), 4.1)
+        self.assertEqual("Bruno", self._quem(4.2)[0])
+
+    def test_lap_number_and_clock_changing_in_separate_packets_swap_once(self):
+        self._pacote(_timings(3, 2, 100.0), 0.0)
+        self.coletor.definir_piloto("Bruno", "Dynatrace")
+        self._pacote(_timings(4, 2, 100.05), 1.0)  # numero da volta muda antes
+        self._pacote(_timings(4, 0, 0.05), 1.05)   # cronometro zera depois: nao e' "reinicio"
+        self.assertEqual("Ana", self._quem(1.1)[0])
+
+    def test_choosing_the_current_driver_again_cancels_the_swap(self):
+        self.coletor.definir_piloto("Bruno", "Dynatrace")
+        self.coletor.definir_piloto("Ana", "Itau")
+        self.assertIsNone(self.coletor.estado()["proximo"])
+
+    def test_new_driver_records_appear_once_announced(self):
+        self._pacote(_tempo_anunciado(100.5, 100.5), 0.0)
+        self._pacote(_timings(3, 1, 30.0), 0.5)
+        self.coletor.definir_piloto("Bruno", "Dynatrace")
+        self._pacote(_timings(3, 0, 0.1), 1.0)  # reinicio: troca na hora
+        self.assertIsNone(self.coletor.handle_packet(self.quadro, 1.1)["last_lap_s"])
+        self._pacote(_tempo_anunciado(99.0, 99.0), 100.0)
+        bruno = self.coletor.handle_packet(self.quadro, 100.1)
+        self.assertEqual((99.0, 99.0), (bruno["last_lap_s"], bruno["best_lap_s"]))
 
 
 class _Contador(BaseHTTPRequestHandler):
