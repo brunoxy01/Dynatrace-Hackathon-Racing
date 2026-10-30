@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver, activeDrivers } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, classificar, filtrarVoltas, opcoesDeFiltro, SEM_FILTRO, TODOS, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver, activeDrivers } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -87,6 +87,32 @@ test('ranking is one row per lap, fastest first, not one per driver', () => {
 });
 test('ranking drops laps without a usable time', () => {
   assert.equal(lapsByTime([{...sample, last_lap_s:null}, {...sample, last_lap_s:0}]).length, 0);
+});
+const voltasDoEvento = [
+  {...sample, driver_name:'Bruno', company_name:'Dynatrace', car_name:'Porsche', last_lap_s:100},
+  {...sample, driver_name:'Ana', company_name:'Itaú', car_name:'Cruze', last_lap_s:98},
+  {...sample, driver_name:'Bruno', company_name:'Dynatrace', car_name:'Cruze', last_lap_s:103},
+  {...sample, driver_name:'Caio', company_name:'Dynatrace', car_name:'Porsche', last_lap_s:101},
+  {...sample, driver_name:'Duda', company_name:null, car_name:'Porsche', last_lap_s:99},
+];
+test('filters combine piloto, empresa and carro', () => {
+  assert.equal(filtrarVoltas(voltasDoEvento, SEM_FILTRO).length, 5);
+  assert.deepEqual(filtrarVoltas(voltasDoEvento, {...SEM_FILTRO, empresa:'Dynatrace'}).map(l => l.last_lap_s), [100, 103, 101]);
+  assert.deepEqual(filtrarVoltas(voltasDoEvento, {...SEM_FILTRO, empresa:'Dynatrace', carro:'Porsche'}).map(l => l.driver_name), ['Bruno', 'Caio']);
+  assert.deepEqual(filtrarVoltas(voltasDoEvento, {...SEM_FILTRO, piloto:'Bruno'}).map(l => l.last_lap_s), [100, 103]);
+});
+test('filtered classification is renumbered and measured against the fastest in the filter', () => {
+  const dynatrace = classificar(filtrarVoltas(voltasDoEvento, {...SEM_FILTRO, empresa:'Dynatrace'}));
+  assert.deepEqual(dynatrace.map(l => [l.position, l.last_lap_s, l.gap_s]), [[1, 100, 0], [2, 101, 1], [3, 103, 3]]);
+  assert.deepEqual(classificar(voltasDoEvento).map(l => l.position), [1, 2, 3, 4, 5]);
+});
+test('filter options list each value once, respect the other filters and keep the chosen one', () => {
+  assert.deepEqual(opcoesDeFiltro(voltasDoEvento, SEM_FILTRO), {
+    pilotos: ['Ana', 'Bruno', 'Caio', 'Duda'], empresas: ['Dynatrace', 'Itaú'], carros: ['Cruze', 'Porsche']});
+  const comItau = opcoesDeFiltro(voltasDoEvento, {...SEM_FILTRO, empresa:'Itaú'});
+  assert.deepEqual([comItau.pilotos, comItau.carros, comItau.empresas], [['Ana'], ['Cruze'], ['Dynatrace', 'Itaú']]);
+  const semVoltas = opcoesDeFiltro(voltasDoEvento, {piloto:'Zé', empresa:TODOS, carro:TODOS});
+  assert.ok(semVoltas.pilotos.includes('Zé'), 'o valor escolhido nunca some da lista');
 });
 test('driver podium takes the fastest lap of each driver, not the first one listed', () => {
   // O caso relatado: o Bruno tem uma volta lenta e uma média antes da rápida.
