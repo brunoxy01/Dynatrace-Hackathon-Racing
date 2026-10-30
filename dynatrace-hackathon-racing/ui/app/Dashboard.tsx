@@ -61,7 +61,7 @@ const TABS = [
   {id: 'intelligence', title: 'Dynatrace Intelligence'},
   {id: 'stream', title: 'Script local'},
 ];
-const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
+const FIELDS = `timestamp, source, driver_name, company_name, car_name, rig.id, session.id, sample.id, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
 // Duas fontes independentes para a mesma telemetria: a API de business events
 // (ams2_collector.py --sink bizevents) e os logs OTLP que o OTel Collector do rig
 // entrega (--sink otlp). Queries separadas de propósito: se o pipeline OTel ainda
@@ -107,6 +107,7 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     timestamp = min(timestamp),
     lap_number = max(lap_number),
     driver_name = takeAny(driver_name),
+    company_name = takeAny(company_name),
     car_name = takeAny(car_name),
     last_lap_s1 = max(last_lap_s1),
     last_lap_s2 = max(last_lap_s2),
@@ -196,6 +197,7 @@ const TOP_SPEED_COLUMN: DataTableColumnDef<Telemetry> = { id: 'top_speed', heade
 const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
+  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? '—', minWidth: 130 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   // Quanto a volta ficou atrás da mais rápida do período. A primeira mostra "—".
   { id: 'gap', header: 'Diferença', accessor: 'gap_s', minWidth: 110, sortType: 'number', sortAccessor: row => row.gap_s ?? Infinity,
@@ -203,7 +205,6 @@ const rankColumns: DataTableColumnDef<Ranked>[] = [
   ...SECTOR_COLUMNS,
   TOP_SPEED_COLUMN,
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
-  { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
 ];
 
@@ -260,7 +261,6 @@ export const Dashboard = () => {
   const [playing, setPlaying] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState('all');
-  const [filtroRig, setFiltroRig] = useState('all');
   const [timeframe, setTimeframe] = useState({from:'now()-7d',to:'now()'});
   const [queryTime, setQueryTime] = useState(Date.now());
   const [lapsTime, setLapsTime] = useState(Date.now());
@@ -382,13 +382,11 @@ export const Dashboard = () => {
   // do período escolhido. A mais recente primeiro.
   const laps = useMemo(() => lapResults
     .filter(l => selected === 'all' || driverKey(l) === selected)
-    .filter(l => filtroRig === 'all' || l['rig.id'] === filtroRig)
-    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroRig]);
+    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected]);
   const ranking = useMemo<Ranked[]>(() => {
     const ordem = lapsByTime(lapResults), melhor = ordem[0]?.last_lap_s ?? null;
     return ordem.map((l,i) => ({...l, position: i+1, gap_s: melhor !== null && finite(l.last_lap_s) ? l.last_lap_s - melhor : null}));
   }, [lapResults]);
-  const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
   const peak = topSpeedOf(events) ?? 0;
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
@@ -468,18 +466,17 @@ export const Dashboard = () => {
   // Pulso de tempo real. Calculado a cada render de propósito: depende de
   // Date.now(), então memorizar por `tick` só esconderia a dependência real.
   // São 10.000 iterações no pior caso, abaixo de um milissegundo.
-  const pulse = ((): {fresh:number; rigs:number; silentFor:number|null} | null => {
+  const pulse = ((): {fresh:number; silentFor:number|null} | null => {
     void tick;
     if (!pulsing) return null;
     const now = Date.now(), window = 60000;
     let newest = 0, fresh = 0;
-    const rigs = new Set<string>();
     for (const e of events) {
       const at = Date.parse(e.timestamp);
       if (at > newest) newest = at;
-      if (now - at <= window) { fresh++; rigs.add(e['rig.id']); }
+      if (now - at <= window) fresh++;
     }
-    return { fresh, rigs: rigs.size, silentFor: newest ? Math.round((now - newest) / 1000) : null };
+    return { fresh, silentFor: newest ? Math.round((now - newest) / 1000) : null };
   })();
   // Quem está na pista AGORA, não só o mais recente: com 2+ simuladores
   // rodando ao mesmo tempo, cada piloto com telemetria fresca (mesma janela
@@ -492,19 +489,19 @@ export const Dashboard = () => {
   })();
   const changeMode = (value: string) => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);
-    setSelected('all'); setFiltroRig('all');
+    setSelected('all');
   };
   // O tempo da volta É o botão: clicar nele reproduz aquela volta. Uma coluna
   // separada de ação duplicaria o alvo de clique sem dizer nada a mais.
   const replayColumns = useMemo<DataTableColumnDef<Telemetry>[]>(() => [
     { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
     { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
+    { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? '—', minWidth: 130 },
     { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
       cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
     ...SECTOR_COLUMNS,
     TOP_SPEED_COLUMN,
     { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
-    { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   ], []);
   const abas = TABS.filter(t => t.id !== 'stream' || isLocal);
   const abaAtual = Math.max(0, abas.findIndex(t => t.id === mode));
@@ -523,7 +520,7 @@ export const Dashboard = () => {
   const secaoTelemetria = (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null = null) =>
     <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{ranking.filter(l => (l.last_lap_s ?? Infinity) < voltaConcluida).length + 1}º · {lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
 
-  const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{piloto?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
+  const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
 
   // Um cartão por piloto com telemetria fresca, não só o mais recente — com
   // 2+ simuladores ativos ao mesmo tempo, cada piloto ganha a própria COLUNA,
@@ -597,7 +594,6 @@ export const Dashboard = () => {
       <Flex alignItems="center" gap={8} flexWrap="wrap" className="filtros-replay">
         <span className="muted">Filtrar por</span>
         <Select aria-label="Filtrar por piloto" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{lapDrivers.map(l => <Select.Option key={driverKey(l)} value={driverKey(l)}>{l.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>
-        <Select aria-label="Filtrar por simulador" value={filtroRig} onChange={v => setFiltroRig(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os simuladores</Select.Option>{opcoesRig.map(r => <Select.Option key={r} value={r}>{r}</Select.Option>)}</Select.Content></Select>
       </Flex>
       <DataTable data={laps} columns={replayColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado. Amplie o intervalo.</DataTable.EmptyState></DataTable>
     </section>
@@ -699,14 +695,14 @@ export const Dashboard = () => {
         {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
           <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
           {pulse.fresh
-            ? `Ao vivo · ${number(pulse.fresh)} amostras/min · ${pulse.rigs} ${pulse.rigs === 1 ? 'simulador' : 'simuladores'}`
+            ? `Ao vivo · ${number(pulse.fresh)} amostras/min`
             : pulse.silentFor === null ? 'Aguardando telemetria ao vivo' : `Sem telemetria há ${number(pulse.silentFor)}s`}
         </div>}
       </div>
     </header>
     <section className="toolbar" aria-label="Controles da corrida">
       <Flex alignItems="center" gap={12} flexWrap="wrap">
-        {mode === 'live' && <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name ?? 'Piloto sem nome'} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>}
+        {mode === 'live' && <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>}
       </Flex>
       <Flex alignItems="center" gap={8}>
         {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></>

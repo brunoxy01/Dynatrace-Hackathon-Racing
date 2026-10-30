@@ -1,6 +1,8 @@
 export interface Telemetry {
   timestamp: string;
   driver_name: string | null;
+  // Empresa do piloto, informada na tela "Trocar piloto" do rig.
+  company_name?: string | null;
   car_name: string | null;
   'rig.id': string;
   'session.id': string;
@@ -62,7 +64,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     // calor) desenhavam esse placeholder como se fosse telemetria de verdade.
     const posX = num('pos_x'), posY = num('pos_y');
     const semPosicaoReal = posX === 0 && posY === 0;
-    return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
+    return [{timestamp:r.timestamp, driver_name:str('driver_name'), company_name:str('company_name')?.trim() || null, car_name:str('car_name'),
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),

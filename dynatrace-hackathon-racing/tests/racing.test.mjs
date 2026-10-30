@@ -14,6 +14,11 @@ test('malformed events are dropped and missing values stay null', () => {
   assert.deepEqual(parseEvents([{timestamp:'bad'}]),[]);
   assert.equal(parseEvents([{timestamp:sample.timestamp}])[0].speed_kmh,null);
 });
+test('the company comes from the event, blank or missing stays null', () => {
+  assert.equal(parseEvents([{...sample, company_name:' Dynatrace '}])[0].company_name, 'Dynatrace');
+  assert.equal(parseEvents([{...sample, company_name:'  '}])[0].company_name, null);
+  assert.equal(parseEvents([sample])[0].company_name, null);
+});
 test('teleport and crash frames never become the peak speed', () => {
   assert.equal(parseEvents([{...sample,speed_kmh:579.4}])[0].speed_kmh,null);
   assert.equal(parseEvents([{...sample,speed_kmh:-5}])[0].speed_kmh,null);
