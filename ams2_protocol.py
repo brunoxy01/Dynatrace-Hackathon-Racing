@@ -272,6 +272,9 @@ class SessionState:
     # Instante (no cronometro da volta) em que S2 e S3 comecaram: {1: ..., 2: ...}
     _inicio_setor: dict = field(default_factory=dict, repr=False)
     _concluida: Optional[tuple] = field(default=None, repr=False)
+    # Tempo anunciado durante o S3 da volta em andamento, um instante antes da
+    # linha: e' o tempo DESTA volta.
+    _anuncio_no_s3: Optional[float] = field(default=None, repr=False)
 
     def ingest_participants(self, raw: bytes) -> None:
         names = decode_participants(raw)
@@ -298,9 +301,22 @@ class SessionState:
         # Never attribute another participant's record to the local driver.
         s = stats.get(self._last_participant_index)
         if s:
+            anterior = self.last_lap_s
             self.last_lap_s = s["last_lap_s"]
             self.best_lap_s = s["fastest_lap_s"]
-            self._fechar_setores()
+            # O pacote 7 tambem chega a cada fim de setor repetindo o mesmo
+            # tempo; so' uma MUDANCA e' o anuncio de uma volta nova.
+            if self.last_lap_s and self.last_lap_s != anterior:
+                self.anunciar_tempo(self.last_lap_s)
+
+    def anunciar_tempo(self, tempo: float) -> None:
+        """O jogo anunciou um tempo de volta novo. E' o tempo da volta que
+        acabou de fechar na linha (S1/S2 ja' guardados em _concluida) ou, se
+        chegou durante o S3, o da volta que esta' fechando agora."""
+        if self._concluida is not None:
+            self._fechar_setores(tempo)
+        elif self._sector == 2 and 2 in self._inicio_setor:
+            self._anuncio_no_s3 = tempo
 
     def ingest_race_definition(self, raw: bytes) -> None:
         rd = decode_race_definition(raw)
@@ -344,41 +360,51 @@ class SessionState:
             inicio = round(cur - no_setor, 3)
             if inicio > 0 and (setor == 1 or self._inicio_setor.get(1, 0) < inicio):
                 self._inicio_setor[setor] = inicio
+                # A volta anterior teve todo o S1 desta para receber o tempo
+                # oficial; se nao recebeu (box, reinicio), fica sem setores em
+                # vez de pegar o tempo de outra volta.
+                if setor == 1:
+                    self._concluida = None
         self._sector = setor
         if cur is not None:
             self._ultimo_cur = cur
             if self._maior_cur is None or cur > self._maior_cur:
                 self._maior_cur = cur
-        self._fechar_setores()
 
     def _fechar_volta(self) -> None:
-        """Passagem pela linha: guarda S1, S2 e o maior cronometro da volta
-        (para casar com o tempo oficial, que pode chegar antes ou depois) e
-        comeca a volta seguinte do zero."""
+        """Passagem pela linha: guarda S1, S2 e o maior cronometro da volta e
+        comeca a volta seguinte do zero.
+
+        O tempo oficial desta volta e' o que o jogo anunciou durante o S3 (um
+        instante antes da linha) ou o PROXIMO anuncio - nunca o tempo que ja'
+        estava em vigor. Antes o casamento era por proximidade (tempo oficial a
+        ate' 1 s do cronometro), mas no instante da linha o jogo ainda mostra o
+        tempo da volta ANTERIOR: com voltas consistentes (1:41.7, 1:41.8...) ele
+        "casava", os setores ficavam presos a' volta errada e a certa ficava
+        sem eles. Por isso so' a primeira volta de cada sessao tinha setores."""
         inicio_s2, inicio_s3 = self._inicio_setor.get(1), self._inicio_setor.get(2)
         if inicio_s2 is not None and inicio_s3 is not None and self._maior_cur is not None:
             self._concluida = (inicio_s2, round(inicio_s3 - inicio_s2, 3), self._maior_cur)
+            if self._anuncio_no_s3 is not None:
+                self._fechar_setores(self._anuncio_no_s3)
+        # Uma segunda passagem "vazia" logo em seguida (cronometro zerou um
+        # pacote antes de o setor virar) nao apaga a volta que acabou de fechar.
+        self._anuncio_no_s3 = None
         self._inicio_setor = {}
         self._maior_cur = None
 
-    def _fechar_setores(self) -> None:
-        if self._concluida is None or not self.last_lap_s:
-            return
-        # Setores ja' fechados para este tempo de volta nao sao sobrescritos: um
-        # reinicio no meio do S3 parece uma passagem pela linha e nao pode
-        # trocar os setores certos da volta anterior.
-        if self.last_lap_sectors_for == self.last_lap_s:
-            self._concluida = None
-            return
-        s1, s2, estimativa = self._concluida
-        # So' fecha com o tempo DESTA volta: um last_lap_s antigo ainda em vigor
-        # (o pacote 7 nao chegou) fica longe da estimativa e e' ignorado.
-        if abs(self.last_lap_s - estimativa) > 1.0:
-            return
-        s3 = round(self.last_lap_s - s1 - s2, 3)
-        self.last_lap_sectors = (s1, s2, s3) if min(s1, s2, s3) > 0 else None
-        self.last_lap_sectors_for = self.last_lap_s
+    def _fechar_setores(self, tempo: float) -> None:
+        """Casa S1/S2 da volta fechada com o tempo oficial dela e calcula S3.
+        Quem escolhe o tempo e' a ordem dos anuncios; a conferencia de 1,5 s
+        contra o cronometro e' so' sanidade (box ou reinicio no S3)."""
+        s1, s2, cronometro = self._concluida
         self._concluida = None
+        if abs(tempo - cronometro) > 1.5:
+            return
+        s3 = round(tempo - s1 - s2, 3)
+        if min(s1, s2, s3) > 0:
+            self.last_lap_sectors = (s1, s2, s3)
+            self.last_lap_sectors_for = tempo
 
     def sectors_of_last_lap(self) -> tuple:
         """(s1, s2, s3) da volta em last_lap_s, ou (None, None, None)."""
