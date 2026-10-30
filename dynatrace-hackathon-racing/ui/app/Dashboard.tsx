@@ -393,14 +393,24 @@ export const Dashboard = () => {
   const rankingFiltrado = useMemo<Ranked[]>(() => classificar(filtrarVoltas(lapResults, filtro)), [lapResults, filtro]);
   const filtroAtivo = filtro.piloto !== TODOS || filtro.empresa !== TODOS || filtro.carro !== TODOS;
   const semVoltas = filtroAtivo ? 'Nenhuma volta com esses filtros no período selecionado.' : 'Nenhuma volta concluída no período selecionado.';
-  const peak = topSpeedOf(events) ?? 0;
+  // Indicadores e pódio seguem os mesmos filtros da classificação. Velocidade
+  // máxima: a da telemetria ao vivo que passa no filtro; sem ninguém do filtro
+  // na pista agora, a maior das voltas do período (mesma régua da coluna
+  // "Vel. máxima" da tabela).
+  const eventosFiltrados = useMemo(() => filtrarVoltas(events, filtro), [events, filtro]);
+  const picoAoVivo = topSpeedOf(eventosFiltrados);
+  const picoPeriodo = useMemo(() => {
+    const v = filtrarVoltas(lapResults, filtro).map(l => l.top_speed_kmh).filter((x): x is number => finite(x));
+    return v.length ? Math.max(...v) : null;
+  }, [lapResults, filtro]);
+  const melhorFiltrada = rankingFiltrado[0] ?? null;
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
   // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
   // de uma. Voltas sem empresa preenchida não entram no pódio.
   // Por ora, pilotos em vez de empresas — pedido explícito, mantém a mesma
   // lógica (primeira ocorrência de cada um no ranking já ordenado por tempo).
-  const pilotosPodio = useMemo(() => driverPodium(ranking, 3), [ranking]);
+  const pilotosPodio = useMemo(() => driverPodium(rankingFiltrado, 3), [rankingFiltrado]);
   // Dynatrace Intelligence: três observações calculadas do que já está
   // carregado (telemetria do período + voltas concluídas), sem consulta nova
   // ao Grail nem IA externa.
@@ -557,12 +567,12 @@ export const Dashboard = () => {
     <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].car_name ?? 'Carro não informado') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
-    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? `Ao vivo · ${LIVE_WINDOW_LABEL}` : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
+    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{[picoAoVivo !== null || picoPeriodo === null ? (mode === 'live' ? `Ao vivo · ${LIVE_WINDOW_LABEL}` : 'Nesta reprodução') : 'Maior das voltas do período', filtroAtivo ? 'com os filtros da classificação' : null].filter(Boolean).join(' · ')}</p></div><strong>{number(picoAoVivo ?? picoPeriodo, 1)} <small>km/h</small></strong><div className="kpi-line blue"/></div>
     {/* A volta mais rápida do PERÍODO, não "a mais rápida entre quem está com
         telemetria ao vivo agora": referenceLap já é o #1 do ranking (mesma
         fonte da tabela abaixo), então o KPI não depende de o piloto recorde
         ainda estar streaming neste exato instante. */}
-    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{referenceLap ? `${referenceLap.driver_name ?? 'Piloto sem nome'} · calculada das voltas concluídas` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(referenceLap?.last_lap_s)}</strong><div className="kpi-line purple"/></div>
+    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{melhorFiltrada ? `${melhorFiltrada.driver_name ?? 'Piloto sem nome'} · ${filtroAtivo ? 'com os filtros da classificação' : 'calculada das voltas concluídas'}` : filtroAtivo ? 'Nenhuma volta com esses filtros' : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(melhorFiltrada?.last_lap_s)}</strong><div className="kpi-line purple"/></div>
   </section>;
 
   // ---------- Tela 1: ao vivo (e o script local, que é a mesma tela) ----------
