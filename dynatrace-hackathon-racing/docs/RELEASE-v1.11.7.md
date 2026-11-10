@@ -1,4 +1,6 @@
-# v1.11.3 — Fim da bolinha fantasma com 2 pilotos
+# v1.11.7 — Fim da bolinha fantasma com 2 pilotos
+
+**Nota de versão:** o tenant estava com a v1.11.6 instalada — a build da branch `frontend-new` do Plinio, publicada direto, fora da `main`. Esta versão (baseada na `main`, sem as mudanças de coletor dele) precisa de um número maior pra poder substituir aquela. Pulamos de 1.11.2 (última da main) para 1.11.7 só por causa disso.
 
 ## O bug
 
