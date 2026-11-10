@@ -13,7 +13,7 @@ import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { createLiveClock, type LiveClock } from './liveClock';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, activeDrivers } from './racing';
+import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, activeDrivers, latestSessionDrivers } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -488,7 +488,10 @@ export const Dashboard = () => {
   const pilotosAoVivo = ((): Driver[] => {
     void tick;
     if (mode !== 'live' || selected !== 'all') return focus ? [focus] : [];
-    return activeDrivers(drivers, Date.now(), 60000);
+    // Reinício do coletor (ou troca de piloto) no mesmo rig pode deixar a
+    // sessão antiga órfã, mas ainda "fresca" — sem latestSessionDrivers ela
+    // vira um segundo cartão fantasma do mesmo simulador.
+    return latestSessionDrivers(activeDrivers(drivers, Date.now(), 60000));
   })();
   const changeMode = (value: string) => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);

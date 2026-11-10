@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver, activeDrivers } from '../ui/app/racing.ts';
+import { trackHeat, summarize, lapTime, parseEvents, mixedHeatColor, mergeTelemetry, applyLapResults, trails, sampleAt, advancePlayback, PLAYBACK_TRAIL_MS, inSampleOrder, sampleSeq, sectorTime, trimToLineToLine, startsAtTrackLine, lineCrossings, positionAt, stepLiveClock, liveDelay, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, TELEMETRY_REFRESH_MS, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, trimToLap, startsAtLine, lapProfile, deltaToReference, nearestReferencePoint, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver, activeDrivers, latestSessionTrails, latestSessionDrivers } from '../ui/app/racing.ts';
 const sample = {timestamp: '2026-09-19T00:00:00Z', driver_name:'Pilot', car_name:'Formula', 'rig.id':'1', 'session.id':'s1', speed_kmh:100, acceleration_g:1, gear:3, brake_pct:0, pos_x:0, pos_y:0, lap_time_s:10, best_lap_s:null, lap_number:1, lap_race_position:1};
 test('average per spatial bin is independent of dwell count and ignores invalid positions', () => {
   assert.equal(trackHeat([sample, {...sample,speed_kmh:200}], 'speed_kmh',[[0,0]])[0],150);
@@ -485,6 +485,46 @@ test('a rig lagging behind another still renders at its own latest known positio
   const porRig = Object.fromEntries(paths.map(trail => [trail[0]['rig.id'], sampleAt(trail, newest).pos_x]));
   assert.equal(porRig['rig-01'], 4);   // acompanha o relógio até onde tem dado
   assert.equal(porRig['rig-02'], 201); // fica na ÚLTIMA posição real dele, não pula nem desaparece
+});
+
+// -------------------- 2 pilotos ao mesmo tempo --------------------
+
+test('two different rigs streaming at the same time both keep their own marker', () => {
+  // O cenário do evento: 2 simuladores DIFERENTES, 2 pilotos, ao mesmo tempo.
+  // latestSessionTrails não pode mexer nisso - são rigs diferentes.
+  const rigA = [0,1].map(s => ({...sample, 'rig.id':'rig-01', 'session.id':'a',
+    driver_name:'Bruno', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:s, pos_y:0}));
+  const rigB = [0,1].map(s => ({...sample, 'rig.id':'rig-02', 'session.id':'b',
+    driver_name:'Agnes', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:100+s, pos_y:0}));
+  const paths = latestSessionTrails(trails([...rigA, ...rigB]));
+  assert.equal(paths.length, 2, 'dois rigs de verdade continuam duas bolinhas');
+});
+
+test('a restarted collector on the SAME rig stops showing a second, frozen marker', () => {
+  // O bug relatado: o mesmo rig físico reinicia o coletor (ou troca de
+  // piloto) e ganha uma sessão nova. A sessão antiga, órfã, ainda tem
+  // amostras na janela - sem latestSessionTrails ela virava uma segunda
+  // bolinha parada, ao lado da nova, em movimento, para UM rig só.
+  const sessaoAntiga = [0,1].map(s => ({...sample, 'rig.id':'rig-01', 'session.id':'antiga',
+    driver_name:'Bruno', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:s, pos_y:0}));
+  const sessaoNova = [2,3].map(s => ({...sample, 'rig.id':'rig-01', 'session.id':'nova',
+    driver_name:'Plinio', timestamp:`2026-09-19T00:00:0${s}Z`, pos_x:s, pos_y:0}));
+  const semFiltro = trails([...sessaoAntiga, ...sessaoNova]);
+  assert.equal(semFiltro.length, 2, 'driverKey por sessão ainda separa as duas - é isto que o filtro precisa corrigir');
+  const paths = latestSessionTrails(semFiltro);
+  assert.equal(paths.length, 1, 'só uma bolinha para o rig-01, a da sessão mais nova');
+  assert.equal(paths[0][0]['session.id'], 'nova');
+});
+
+test('latestSessionDrivers keeps each rig once, the most recently seen session', () => {
+  const porSessao = [
+    {...sample, 'rig.id':'rig-01', 'session.id':'antiga', driver_name:'Bruno', timestamp:'2026-09-19T00:00:00Z'},
+    {...sample, 'rig.id':'rig-01', 'session.id':'nova', driver_name:'Plinio', timestamp:'2026-09-19T00:00:05Z'},
+    {...sample, 'rig.id':'rig-02', 'session.id':'x', driver_name:'Agnes', timestamp:'2026-09-19T00:00:03Z'},
+  ];
+  const resultado = latestSessionDrivers(porSessao);
+  assert.equal(resultado.length, 2);
+  assert.deepEqual(resultado.map(d => d.driver_name).sort(), ['Agnes', 'Plinio']);
 });
 
 // -------------------- Dynatrace Intelligence --------------------

@@ -211,6 +211,31 @@ export function trails(events: Telemetry[]): Telemetry[][] {
   return [...byDriver.values()];
 }
 
+// Depois de um reinício do coletor (ou uma troca de piloto no mesmo rig), o
+// MESMO simulador físico pode ter duas sessões dentro da janela ao vivo: a
+// antiga, órfã e parada (ninguém mais manda amostra pra ela); a nova, em
+// movimento. driverKey (rig+sessão) as trata como carros diferentes, então
+// sem isto as duas viravam bolinhas separadas no mapa ao mesmo tempo, com um
+// rig só. Mantém, por rig.id, apenas a sessão com a amostra mais recente —
+// não mexe em rigs DIFERENTES rodando ao mesmo tempo, nem num rig atrasado
+// por latência (ver "a rig lagging behind another...", mesmo rig.id o tempo
+// todo, nunca duas sessões).
+function ultimaSessaoPorRig<T>(itens: T[], rigDe: (item: T) => string, instanteDe: (item: T) => number): T[] {
+  const porRig = new Map<string, T>();
+  for (const item of itens) {
+    const rig = rigDe(item);
+    const atual = porRig.get(rig);
+    if (!atual || instanteDe(item) > instanteDe(atual)) porRig.set(rig, item);
+  }
+  return [...porRig.values()];
+}
+export function latestSessionTrails(paths: Telemetry[][]): Telemetry[][] {
+  return ultimaSessaoPorRig(paths, trail => trail[0]['rig.id'], trail => Date.parse(trail[trail.length - 1].timestamp));
+}
+export function latestSessionDrivers(drivers: Driver[]): Driver[] {
+  return ultimaSessaoPorRig(drivers, d => d['rig.id'], d => Date.parse(d.timestamp));
+}
+
 // O simulador repete o mesmo `last_lap_s` em todos os quadros até fechar uma
 // volta nova — inclusive atravessando várias voltas, quando as seguintes não
 // registram tempo — e o valor ainda sobrevive ao reinício do coletor, porque

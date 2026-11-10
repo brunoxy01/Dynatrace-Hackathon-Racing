@@ -2,7 +2,7 @@ import React, { useEffect, useId, useMemo, useSyncExternalStore } from 'react';
 import Colors from '@dynatrace/strato-design-tokens/colors';
 import track from './data/interlagos.json';
 import type { LiveClock } from './liveClock';
-import { type Telemetry, mixedHeatColor, number, trackHeat, trails, sampleAt, positionAt, PLAYBACK_TRAIL_MS, driverKey } from './racing';
+import { type Telemetry, mixedHeatColor, number, trackHeat, trails, latestSessionTrails, sampleAt, positionAt, PLAYBACK_TRAIL_MS, driverKey } from './racing';
 
 // Fixed world-to-map transform shared by the reference and live samples.
 const project = (x: number, y: number) => ({x: 54 + (y + 486) * .53, y: 40 + (x + 480) * .53});
@@ -32,7 +32,7 @@ const relogioParado = () => 0;
 // 20 vezes por segundo, e o mapa de calor tem ~156 gradientes que não devem ser
 // redesenhados nesse ritmo.
 function CarMarkers({events, liveClock}: {events: Telemetry[]; liveClock?: LiveClock}) {
-  const paths = useMemo(() => trails(events), [events]);
+  const paths = useMemo(() => latestSessionTrails(trails(events)), [events]);
   const [oldest, newest] = useMemo(() => paths.length
     ? [Math.min(...paths.map(t => Date.parse(t[0].timestamp))), Math.max(...paths.map(t => Date.parse(t[t.length-1].timestamp)))]
     : [0, 0], [paths]);
