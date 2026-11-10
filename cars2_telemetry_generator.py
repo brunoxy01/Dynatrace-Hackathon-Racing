@@ -4,6 +4,7 @@
 from __future__ import annotations  # sintaxe `str | None` tambem no Python 3.9
 
 import argparse
+import json
 import math
 import socket
 import struct
@@ -14,10 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from ams2_protocol import decode_telemetry
 from ams2_udp_listener import HEADER_FORMAT, HEADER_SIZE, PACKET_TYPES, parse_header
 
 DEFAULT_CAPTURE = Path(__file__).parent / "captura.txt"
 DEFAULT_HOST = "127.0.0.1"
+DEFAULT_TRACK = Path(__file__).parent / "dynatrace-hackathon-racing" / "ui" / "app" / "data" / "interlagos.json"
 DEFAULT_PORT = 5606
 
 TELEMETRY_PACKET_TYPE = 0
@@ -73,6 +76,25 @@ def select_packets(
     if packet_types is None:
         return list(packets)
     return [packet for packet in packets if packet.payload[10] in packet_types]
+
+
+def trim_to_track_start(packets: list[CapturedPacket], track_path: Path = DEFAULT_TRACK) -> list[CapturedPacket]:
+    """Corta os pacotes antes da amostra de posicao mais proxima da largada (o
+    mesmo primeiro ponto do tracado que o mapa do app marca como LARGADA). Sem
+    isto o ensaio comeca de onde a captura foi gravada, que pode ser no meio da
+    pista - visivel demais com 2+ rigs lado a lado, cada um comecando num
+    lugar diferente."""
+    with track_path.open(encoding="utf-8") as arquivo:
+        largada_x, largada_y = json.load(arquivo)[0]
+    melhor_indice, melhor_distancia = 0, None
+    for indice, pacote in enumerate(packets):
+        if pacote.payload[10] != TELEMETRY_PACKET_TYPE:
+            continue
+        telemetria = decode_telemetry(pacote.payload)
+        distancia = (telemetria["pos_x"] - largada_x) ** 2 + (telemetria["pos_y"] - largada_y) ** 2
+        if melhor_distancia is None or distancia < melhor_distancia:
+            melhor_distancia, melhor_indice = distancia, indice
+    return packets[melhor_indice:]
 
 
 def rewrite_packet_number(payload: bytes, packet_number: int) -> bytes:
@@ -226,6 +248,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--inspect", action="store_true", help="analisa a captura sem transmitir")
     parser.add_argument(
+        "--start-at-line", action="store_true",
+        help="comeca na amostra mais proxima da largada, em vez do inicio da captura",
+    )
+    parser.add_argument(
         "--preserve-sequence",
         action="store_true",
         help="mantem packet_number original, inclusive entre repeticoes",
@@ -256,6 +282,8 @@ def main() -> None:
     packets = select_packets(load_capture(args.capture), set(args.packet_types) if args.packet_types else None)
     if not packets:
         raise SystemExit("nenhum pacote corresponde aos filtros informados")
+    if args.start_at_line:
+        packets = trim_to_track_start(packets)
     if args.inspect:
         inspect_capture(packets)
         return

@@ -14,6 +14,8 @@ rig/*.exe
 rig/collector.zip
 rig/LICENSE*
 rig/*.md5
+# Ultimo piloto escolhido na tela "Trocar piloto"
+piloto-atual.json
 # Fila em disco do collector e saidas de ensaio
 fila-otel/
 otel/fila-otel/

@@ -1,6 +1,8 @@
 export interface Telemetry {
   timestamp: string;
   driver_name: string | null;
+  // Empresa do piloto, informada na tela "Trocar piloto" do rig.
+  company_name?: string | null;
   car_name: string | null;
   'rig.id': string;
   'session.id': string;
@@ -62,7 +64,7 @@ export function parseEvents(input: unknown): Telemetry[] {
     // calor) desenhavam esse placeholder como se fosse telemetria de verdade.
     const posX = num('pos_x'), posY = num('pos_y');
     const semPosicaoReal = posX === 0 && posY === 0;
-    return [{timestamp:r.timestamp, driver_name:str('driver_name'), car_name:str('car_name'),
+    return [{timestamp:r.timestamp, driver_name:str('driver_name'), company_name:str('company_name')?.trim() || null, car_name:str('car_name'),
       'rig.id':str('rig.id') ?? 'unknown', 'session.id':str('session.id') ?? 'unknown', 'sample.id':str('sample.id'), source:str('source'),
       speed_kmh:speed(), acceleration_g:gforce(), gear:num('gear'), brake_pct:num('brake_pct'),
       pos_x:semPosicaoReal ? null : posX, pos_y:semPosicaoReal ? null : posY, lap_time_s:num('lap_time_s'), best_lap_s:num('best_lap_s'),
@@ -286,6 +288,42 @@ export function lapsByTime(laps: Telemetry[]): Telemetry[] {
   return laps
     .filter(lap => finite(lap.last_lap_s) && lap.last_lap_s > 0)
     .sort((a,b) => a.last_lap_s! - b.last_lap_s!);
+}
+
+// Linha da classificação: posição e diferença para a mais rápida DAS VOLTAS
+// RECEBIDAS. Com filtro, quem chama passa só as voltas filtradas, e a tabela
+// renumera (1º, 2º...) e mede a diferença para a melhor do filtro.
+export type Ranked = Telemetry & {position: number; gap_s: number | null};
+export function classificar(laps: Telemetry[]): Ranked[] {
+  const ordem = lapsByTime(laps), melhor = ordem[0]?.last_lap_s ?? null;
+  return ordem.map((l,i) => ({...l, position: i+1, gap_s: melhor !== null && finite(l.last_lap_s) ? l.last_lap_s - melhor : null}));
+}
+
+// Filtros da classificação e das voltas do Replay. TODOS = sem filtro naquele campo.
+export const TODOS = '*todos*';
+export interface FiltroVoltas { piloto: string; empresa: string; carro: string; }
+export const SEM_FILTRO: FiltroVoltas = {piloto: TODOS, empresa: TODOS, carro: TODOS};
+export function filtrarVoltas<T extends Telemetry>(laps: T[], filtro: FiltroVoltas): T[] {
+  return laps.filter(l =>
+    (filtro.piloto === TODOS || l.driver_name === filtro.piloto) &&
+    (filtro.empresa === TODOS || l.company_name === filtro.empresa) &&
+    (filtro.carro === TODOS || l.car_name === filtro.carro));
+}
+// Opções de cada filtro, sem repetição e em ordem alfabética. Cada lista
+// respeita os OUTROS filtros já escolhidos (com a empresa X escolhida, só
+// aparecem pilotos e carros que têm volta pela empresa X) e sempre inclui o
+// valor escolhido, para o seletor nunca ficar com um valor fora da lista.
+export function opcoesDeFiltro(laps: Telemetry[], filtro: FiltroVoltas): {pilotos: string[]; empresas: string[]; carros: string[]} {
+  const valores = (campo: 'driver_name' | 'company_name' | 'car_name', outros: FiltroVoltas, escolhido: string) => {
+    const lista = new Set(filtrarVoltas(laps, outros).map(l => l[campo]).filter((v): v is string => Boolean(v)));
+    if (escolhido !== TODOS) lista.add(escolhido);
+    return [...lista].sort((a,b) => a.localeCompare(b, 'pt-BR'));
+  };
+  return {
+    pilotos: valores('driver_name', {...filtro, piloto: TODOS}, filtro.piloto),
+    empresas: valores('company_name', {...filtro, empresa: TODOS}, filtro.empresa),
+    carros: valores('car_name', {...filtro, carro: TODOS}, filtro.carro),
+  };
 }
 
 // Pódio de pilotos: a volta mais rápida de cada um, agrupado por nome (não

@@ -79,7 +79,8 @@ def iso_now() -> str:
 
 def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState,
                  telemetry: dict, timings: Optional[dict], source: str,
-                 sample_seq: int = 0, driver_name: Optional[str] = None) -> dict:
+                 sample_seq: int = 0, driver_name: Optional[str] = None,
+                 company_name: Optional[str] = None) -> dict:
     nome_do_jogo = (state.driver_name or "").strip() or None
     s1, s2, s3 = state.sectors_of_last_lap()
     return {
@@ -93,10 +94,10 @@ def build_event(rig_id: str, rig_name: str, session_id: str, state: SessionState
         "session.id": session_id,
         "rig.id": rig_id,
         "rig.name": rig_name,
-        # O piloto digita o proprio nome no perfil do AMS2 (conta Steam). A
-        # opcao --driver-name vence, para quando o rig ja' sabe quem esta na
-        # cadeira.
+        # O nome do perfil do AMS2 e' o da conta Steam do PC. Quem esta na
+        # cadeira e' informado na tela "Trocar piloto" (ou --driver-name), e vence.
         "driver_name": driver_name or nome_do_jogo,
+        "company_name": company_name,
         "car_name": state.car_name,
         "acceleration_g": telemetry["acceleration_g"],
         "speed_kmh": telemetry["speed_kmh"],
@@ -258,14 +259,36 @@ def post_otlp(conexao: ConexaoHttp, events: list) -> None:
     _post_json(conexao, build_otlp_payload(events), {}, f"otlp ({len(events)} registro(s))")
 
 
+def _limpo(texto: Optional[str]) -> Optional[str]:
+    return (texto or "").strip() or None
+
+
 class Collector:
+    # Na passagem pela linha, quanto esperar o jogo anunciar o tempo da volta
+    # que acabou de fechar antes de trocar o piloto. O anuncio costuma chegar
+    # em menos de 1 s; sem ele (volta invalida, reinicio em S3) troca assim mesmo.
+    ESPERA_ANUNCIO_S = 3.0
+    # Depois do anuncio, o piloto anterior segue mais este tempo: os quadros com
+    # o tempo da volta dele precisam sair na sessao DELE, senao a volta nao
+    # entra no placar (o app agrupa as voltas por sessao + tempo).
+    MANTER_APOS_ANUNCIO_S = 1.0
+    # Anuncio recebido ate' este tempo ANTES de a linha ser detectada ja' e' o
+    # tempo da volta que fechou (o jogo as vezes anuncia um pacote antes).
+    ANUNCIO_RECENTE_S = 2.0
+
     def __init__(self, rig_id: str, rig_name: str, session_id: str, source_label: str,
-                 driver_name: Optional[str] = None, sample_hz: float = 0.0):
+                 driver_name: Optional[str] = None, sample_hz: float = 0.0,
+                 company_name: Optional[str] = None):
         self.state = SessionState()
         self.rig_id = rig_id
         self.rig_name = rig_name
-        self.driver_name = driver_name
+        # O piloto e' nome + empresa. Os dois mudam juntos, so' no comeco de uma
+        # volta (ver definir_piloto).
+        self.driver_name = _limpo(driver_name)
+        self.company_name = _limpo(company_name)
         self.session_id = session_id
+        self._sessao_base = session_id
+        self._trocas = 0
         self.source_label = source_label
         self._last_timings: Optional[dict] = None
         self._sample_seq = 0
@@ -273,17 +296,130 @@ class Collector:
         # corte exato em 100 ms deixaria passar ora 1, ora 2 quadros em cada 3.
         self._intervalo = 0.9 / sample_hz if sample_hz > 0 else 0.0
         self._ultimo_envio: Optional[float] = None
+        # Troca de piloto pedida pela tela (outra thread), esperando a volta.
+        self._trava = threading.Lock()
+        self._pendente: Optional[tuple] = None
+        self._troca_desde: Optional[float] = None
+        self._anuncio_da_volta: Optional[float] = None
+        self._anunciado_em: Optional[float] = None
+        # Ultimo tempo e recorde do piloto anterior: o jogo continua mandando os
+        # dois depois da troca, e eles nao podem aparecer como do piloto novo.
+        self._herdado_last: Optional[float] = None
+        self._herdado_best: Optional[float] = None
+        self._volta_ant: Optional[int] = None
+        self._cron_ant: Optional[float] = None
+        self._setor_ant: Optional[int] = None
+        self._viu_timings = False
+        self._sem_cronometro = False
+
+    def definir_piloto(self, nome: Optional[str], empresa: Optional[str]) -> None:
+        """Chamado pela tela "Trocar piloto" (thread do servidor web). Nao troca
+        na hora: o piloto novo passa a ser reportado quando uma volta comeca ou
+        e' reiniciada no jogo. Escolher de novo o piloto atual cancela a troca."""
+        novo = (_limpo(nome), _limpo(empresa))
+        with self._trava:
+            self._pendente = None if novo == (self.driver_name, self.company_name) else novo
+
+    def piloto_pendente(self) -> Optional[tuple]:
+        with self._trava:
+            return self._pendente
+
+    def estado(self) -> dict:
+        """O que a tela mostra: quem esta no carro e quem entra na proxima volta."""
+        pendente = self.piloto_pendente()
+        return {
+            "versao": VERSAO,
+            "piloto": self.driver_name,
+            "empresa": self.company_name,
+            "nome_do_jogo": _limpo(self.state.driver_name),
+            "proximo": None if pendente is None else {"piloto": pendente[0], "empresa": pendente[1]},
+            "esperando_tempo_da_volta": self._troca_desde is not None,
+        }
+
+    def _acompanhar_volta(self, t: dict, instante: float) -> None:
+        """Detecta o comeco de uma volta (passagem pela linha) ou o reinicio da
+        volta (box, restart), que e' quando a troca de piloto pendente vale.
+
+        Linha: numero da volta sobe 1, ou o cronometro zera vindo do S3. O jogo
+        as vezes muda um pacote antes do outro; a primeira deteccao basta.
+        Reinicio: cronometro zera fora do S3, ou volta a existir, perto de zero,
+        depois de indisponivel (saida da garagem)."""
+        volta, cron, setor = t["lap_number"], t["lap_time_s"], t["sector"]
+        inicio = None
+        if self._viu_timings:
+            if self._volta_ant is not None and volta == self._volta_ant + 1:
+                inicio = "linha"
+            elif cron is not None and ((self._sem_cronometro and cron < 5.0) or
+                                       (self._cron_ant is not None and cron < self._cron_ant - 1.0)):
+                inicio = "linha" if self._setor_ant == 2 else "reinicio"
+        self._viu_timings = True
+        self._volta_ant = volta
+        self._sem_cronometro = cron is None
+        if cron is not None:
+            self._cron_ant = cron
+            self._setor_ant = setor
+        if inicio is None or self._troca_desde is not None or self.piloto_pendente() is None:
+            return
+        if inicio == "reinicio":
+            self._trocar_piloto()  # nenhuma volta fechou: troca na hora
+            return
+        # A volta que fechou e' do piloto anterior: espera o tempo dela sair.
+        self._troca_desde = instante
+        recente = self._anunciado_em is not None and instante - self._anunciado_em <= self.ANUNCIO_RECENTE_S
+        self._anuncio_da_volta = self._anunciado_em if recente else None
+
+    def _conferir_troca(self, instante: float) -> None:
+        if self._troca_desde is None:
+            return
+        if self._anuncio_da_volta is not None:
+            if instante - self._anuncio_da_volta >= self.MANTER_APOS_ANUNCIO_S:
+                self._trocar_piloto()
+        elif instante - self._troca_desde >= self.ESPERA_ANUNCIO_S:
+            self._trocar_piloto()
+
+    def _trocar_piloto(self) -> None:
+        with self._trava:
+            novo, self._pendente = self._pendente, None
+        self._troca_desde = None
+        self._anuncio_da_volta = None
+        if novo is None:
+            return
+        self.driver_name, self.company_name = novo
+        # Sessao nova: o app separa as voltas de cada piloto por sessao.
+        self._trocas += 1
+        self.session_id = f"{self._sessao_base}-p{self._trocas}"
+        self._herdado_last = self.state.last_lap_s
+        self._herdado_best = self.state.best_lap_s
+        quem = self.driver_name or "nome do perfil do jogo"
+        print(f"\n[i] Piloto agora: {quem}{f' ({self.company_name})' if self.company_name else ''}"
+              f" - sessao {self.session_id}", flush=True)
+
+    def _ocultar_herdados(self, evento: dict) -> None:
+        """Depois da troca, o tempo e o recorde que o jogo ainda repete sao do
+        piloto anterior: somem ate' o jogo anunciar um valor novo."""
+        if self._herdado_last is not None:
+            if self.state.last_lap_s == self._herdado_last:
+                for campo in ("last_lap_s", "last_lap_s1", "last_lap_s2", "last_lap_s3"):
+                    evento[campo] = None
+            else:
+                self._herdado_last = None
+        if self._herdado_best is not None:
+            if self.state.best_lap_s == self._herdado_best:
+                evento["best_lap_s"] = None
+            else:
+                self._herdado_best = None
 
     def handle_packet(self, raw: bytes, agora: Optional[float] = None) -> Optional[dict]:
         """Processa um pacote UDP cru; retorna um evento pronto quando um
         frame de telemetria (packetType 0) for decodificado, ou None.
 
-        `agora` e' o relogio usado no corte de frequencia (segundos). O replay
-        passa o horario gravado na captura, para que --speed 0 nao descarte
-        quase tudo; no UDP ao vivo vale o relogio da maquina."""
+        `agora` e' o relogio (segundos) do corte de frequencia e da espera da
+        troca de piloto. O replay passa o horario gravado na captura, para que
+        --speed 0 nao descarte quase tudo; no UDP ao vivo vale o da maquina."""
         if len(raw) < 12:
             return None
         header = decode_header(raw)
+        instante = time.monotonic() if agora is None else agora
 
         if header.packet_type == 1:
             self.state.ingest_race_definition(raw)
@@ -291,26 +427,34 @@ class Collector:
             self.state.ingest_participants(raw)
         elif header.packet_type == 3:
             self._last_timings = self.state.ingest_timings(raw)
+            self._acompanhar_volta(self._last_timings, instante)
         elif header.packet_type == 7:
+            antes = self.state.last_lap_s
             self.state.ingest_time_stats(raw)
+            if self.state.last_lap_s != antes:
+                self._anunciado_em = instante
+                if self._troca_desde is not None and self._anuncio_da_volta is None:
+                    self._anuncio_da_volta = instante
         elif header.packet_type == 8:
             self.state.ingest_vehicle_names(raw, len(raw))
-        elif header.packet_type == 0:
-            # Os pacotes de estado (voltas, nomes) acima sao sempre processados;
-            # so' a amostra de telemetria e' rarefeita.
-            if self._intervalo:
-                instante = time.monotonic() if agora is None else agora
-                if self._ultimo_envio is not None and instante - self._ultimo_envio < self._intervalo:
-                    return None
-                self._ultimo_envio = instante
-            telemetry = decode_telemetry(raw)
-            self._sample_seq += 1
-            return build_event(
-                self.rig_id, self.rig_name, self.session_id, self.state,
-                telemetry, self._last_timings, self.source_label, self._sample_seq,
-                self.driver_name,
-            )
-        return None
+        self._conferir_troca(instante)
+        if header.packet_type != 0:
+            return None
+        # Os pacotes de estado (voltas, nomes) acima sao sempre processados;
+        # so' a amostra de telemetria e' rarefeita.
+        if self._intervalo:
+            if self._ultimo_envio is not None and instante - self._ultimo_envio < self._intervalo:
+                return None
+            self._ultimo_envio = instante
+        telemetry = decode_telemetry(raw)
+        self._sample_seq += 1
+        evento = build_event(
+            self.rig_id, self.rig_name, self.session_id, self.state,
+            telemetry, self._last_timings, self.source_label, self._sample_seq,
+            self.driver_name, self.company_name,
+        )
+        self._ocultar_herdados(evento)
+        return evento
 
 
 class EnvioEmSegundoPlano:
@@ -445,9 +589,11 @@ class Dispatcher:
             fila.drenar()
 
 
-def run_udp(args, dispatcher: "Dispatcher") -> int:
-    collector = Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
-                          args.driver_name, args.sample_hz)
+def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = None) -> int:
+    # O HackathonRacing.exe cria o coletor antes, para ligar a tela "Trocar
+    # piloto" nele; pela linha de comando ele nasce aqui.
+    collector = collector or Collector(args.rig_id, args.rig_name, f"live-{int(time.time())}", "real",
+                                       args.driver_name, args.sample_hz, getattr(args, "company_name", None))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
     print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
@@ -484,7 +630,7 @@ def run_udp(args, dispatcher: "Dispatcher") -> int:
 
 def run_replay(args, dispatcher: "Dispatcher") -> int:
     collector = Collector(args.rig_id, args.rig_name, f"replay-{int(time.time())}", "real",
-                          args.driver_name, args.sample_hz)
+                          args.driver_name, args.sample_hz, getattr(args, "company_name", None))
     print(f"[info] destino: {dispatcher.describe()}")
 
     def iter_packets():
@@ -557,6 +703,10 @@ def main() -> int:
     parser.add_argument(
         "--driver-name", default=os.environ.get("RACING_DRIVER") or None,
         help="sobrepoe o nome do piloto vindo do simulador (o cliente na cadeira)",
+    )
+    parser.add_argument(
+        "--company-name", default=os.environ.get("RACING_COMPANY") or None,
+        help="empresa do piloto (o piloto e' nome + empresa)",
     )
     parser.add_argument("--endpoint", default=os.environ.get("DT_ENV_URL"))
     parser.add_argument("--token", default=os.environ.get("DT_API_TOKEN"))

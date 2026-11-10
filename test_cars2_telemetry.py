@@ -3,11 +3,14 @@ import unittest
 from pathlib import Path
 
 from ams2_udp_listener import HEADER_SIZE, parse_header
+from ams2_protocol import decode_telemetry
 from cars2_telemetry_generator import (
+    DEFAULT_TRACK,
     TelemetryVariations,
     apply_telemetry_variations,
     load_capture,
     rewrite_packet_number,
+    trim_to_track_start,
 )
 
 
@@ -51,6 +54,25 @@ class Cars2TelemetryTests(unittest.TestCase):
 
         self.assertEqual(123456, struct.unpack_from("<I", rewritten)[0])
         self.assertEqual(original[4:], rewritten[4:])
+
+    def test_start_at_line_drops_everything_before_the_closest_sample_to_the_start(self):
+        trimmed = trim_to_track_start(self.packets)
+
+        self.assertLess(len(trimmed), len(self.packets), "a captura real nao ja comeca na largada")
+        import json
+        largada_x, largada_y = json.loads(DEFAULT_TRACK.read_text(encoding="utf-8"))[0]
+        primeira_amostra = next(decode_telemetry(p.payload) for p in trimmed if p.payload[10] == 0)
+        distancia_na_largada = (primeira_amostra["pos_x"] - largada_x) ** 2 + (primeira_amostra["pos_y"] - largada_y) ** 2
+        # Nenhuma amostra DESCARTADA pode estar mais perto da largada do que a
+        # primeira que sobrou - senao o corte escolheu o lugar errado.
+        for pacote in self.packets:
+            if pacote.payload[10] != 0:
+                continue
+            if pacote.line_number >= trimmed[0].line_number:
+                break
+            amostra = decode_telemetry(pacote.payload)
+            distancia = (amostra["pos_x"] - largada_x) ** 2 + (amostra["pos_y"] - largada_y) ** 2
+            self.assertGreaterEqual(distancia, distancia_na_largada)
 
     def test_variations_change_confirmed_telemetry_fields(self):
         original = next(

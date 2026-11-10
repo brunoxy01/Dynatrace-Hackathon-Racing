@@ -13,7 +13,7 @@ import track from './data/interlagos.json';
 import { TrackMap, InsightsMap, type InsightMarker } from './TrackMap';
 import { useLocalTelemetry } from './useLocalTelemetry';
 import { createLiveClock, type LiveClock } from './liveClock';
-import { type Driver, type Telemetry, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, lapsByTime, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, activeDrivers, latestSessionDrivers } from './racing';
+import { type Driver, type Telemetry, type Ranked, type FiltroVoltas, classificar, filtrarVoltas, opcoesDeFiltro, SEM_FILTRO, TODOS, finite, lapTime, number, summarize, driverKey, parseEvents, mergeTelemetry, applyLapResults, backfillIdentity, lapWindow, dedupeLaps, driverPodium, startsAtLine, lapProfile, deltaToReference, brakingHotspot, accelerationHotspot, topSpeedLocation, lapConsistency, brakingHotspotsByDriver, accelerationHotspotsByDriver , TELEMETRY_REFRESH_MS, MAX_SPEED_KMH, inSampleOrder, sectorTime, trimToLineToLine, startsAtTrackLine, trails, sampleAt, lapTimeAt, recentLapResult, topSpeedOf, lapCompletions, activeDrivers, latestSessionDrivers } from './racing';
 import './racing.css';
 import './strato-theme.css';
 
@@ -61,7 +61,7 @@ const TABS = [
   {id: 'intelligence', title: 'Dynatrace Intelligence'},
   {id: 'stream', title: 'Script local'},
 ];
-const FIELDS = `timestamp, source, driver_name, car_name, rig.id, session.id, sample.id, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
+const FIELDS = `timestamp, source, driver_name, company_name, car_name, rig.id, session.id, sample.id, speed_kmh, acceleration_g, gear, brake_pct, pos_x, pos_y, lap_time_s, best_lap_s, last_lap_s, lap_invalidated, lap_number, lap_race_position`;
 // Duas fontes independentes para a mesma telemetria: a API de business events
 // (ams2_collector.py --sink bizevents) e os logs OTLP que o OTel Collector do rig
 // entrega (--sink otlp). Queries separadas de propósito: se o pipeline OTel ainda
@@ -107,6 +107,7 @@ const LAPS = (fonte: string) => `fetch ${fonte}
     timestamp = min(timestamp),
     lap_number = max(lap_number),
     driver_name = takeAny(driver_name),
+    company_name = takeAny(company_name),
     car_name = takeAny(car_name),
     last_lap_s1 = max(last_lap_s1),
     last_lap_s2 = max(last_lap_s2),
@@ -173,10 +174,9 @@ const LAPS_REFRESH_MS = 15000;
 // data), o sortAccessor entrega o valor cru para a ordenação.
 
 
-// Ranking do período: uma linha por VOLTA, da mais rápida para a mais lenta.
-// Por piloto, o período inteiro virava uma linha por pessoa — com um piloto só
-// na pista, uma linha no total.
-type Ranked = Telemetry & {position: number; gap_s: number | null};
+// Ranking do período: uma linha por VOLTA, da mais rápida para a mais lenta
+// (Ranked, em racing.ts). Por piloto, o período inteiro virava uma linha por
+// pessoa — com um piloto só na pista, uma linha no total.
 // Classificação: a primeira página é o "top 20"; com mais voltas no período, a
 // tabela pagina. autoResetPageIndex desligado porque no Ao vivo as voltas
 // recarregam a cada 15s e a tabela voltava para a página 1 no meio da leitura;
@@ -196,6 +196,7 @@ const TOP_SPEED_COLUMN: DataTableColumnDef<Telemetry> = { id: 'top_speed', heade
 const rankColumns: DataTableColumnDef<Ranked>[] = [
   { id: 'position', header: '#', accessor: 'position', minWidth: 80, alignment: 'center', sortType: 'number', cell: ({rowData}) => <Posicao posicao={rowData.position}/> },
   { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 150 },
+  { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? '—', minWidth: 130 },
   { id: 'time', header: 'Tempo', accessor: 'last_lap_s', minWidth: 120, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity, cell: ({rowData}) => <>{lapTime(rowData.last_lap_s)}</> },
   // Quanto a volta ficou atrás da mais rápida do período. A primeira mostra "—".
   { id: 'gap', header: 'Diferença', accessor: 'gap_s', minWidth: 110, sortType: 'number', sortAccessor: row => row.gap_s ?? Infinity,
@@ -203,7 +204,6 @@ const rankColumns: DataTableColumnDef<Ranked>[] = [
   ...SECTOR_COLUMNS,
   TOP_SPEED_COLUMN,
   { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 170 },
-  { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
 ];
 
@@ -251,6 +251,25 @@ function DetectorDeVoltas({liveClock, voltas, onVolta}: {liveClock: LiveClock; v
   return null;
 }
 
+// Filtros logo acima das tabelas de voltas (classificação e Replay). As opções
+// vêm das voltas do período, não da telemetria dos últimos 2 min: dá para
+// filtrar mesmo com ninguém na pista.
+function FiltrosDeVoltas({voltas, filtro, onChange}: {voltas: Telemetry[]; filtro: FiltroVoltas; onChange: (filtro: FiltroVoltas) => void}) {
+  const opcoes = useMemo(() => opcoesDeFiltro(voltas, filtro), [voltas, filtro]);
+  const ativo = filtro.piloto !== TODOS || filtro.empresa !== TODOS || filtro.carro !== TODOS;
+  const seletor = (campo: keyof FiltroVoltas, rotulo: string, todos: string, valores: string[]) =>
+    <Select aria-label={`Filtrar por ${rotulo}`} value={filtro[campo]} onChange={v => onChange({...filtro, [campo]: v ?? TODOS})}>
+      <Select.Content><Select.Option value={TODOS}>{todos}</Select.Option>{valores.map(v => <Select.Option key={v} value={v}>{v}</Select.Option>)}</Select.Content>
+    </Select>;
+  return <Flex alignItems="center" gap={8} flexWrap="wrap" className="filtros-voltas">
+    <span className="muted">Filtrar por</span>
+    {seletor('piloto', 'piloto', 'Todos os pilotos', opcoes.pilotos)}
+    {seletor('empresa', 'empresa', 'Todas as empresas', opcoes.empresas)}
+    {seletor('carro', 'carro', 'Todos os carros', opcoes.carros)}
+    {ativo && <Button onClick={() => onChange(SEM_FILTRO)}>Limpar filtros</Button>}
+  </Flex>;
+}
+
 function Stat({label, value, unit}: {label: string; value: string; unit?: string}) {
   return <div className="stat"><span>{label}</span><strong>{value}<small>{unit}</small></strong></div>;
 }
@@ -259,8 +278,7 @@ export const Dashboard = () => {
   const [mode, setMode] = useState(isLocal ? 'stream' : 'live');
   const [playing, setPlaying] = useState(false);
   const [cursor, setCursor] = useState(0);
-  const [selected, setSelected] = useState('all');
-  const [filtroRig, setFiltroRig] = useState('all');
+  const [filtro, setFiltro] = useState<FiltroVoltas>(SEM_FILTRO);
   const [timeframe, setTimeframe] = useState({from:'now()-7d',to:'now()'});
   const [queryTime, setQueryTime] = useState(Date.now());
   const [lapsTime, setLapsTime] = useState(Date.now());
@@ -360,43 +378,39 @@ export const Dashboard = () => {
     setVoltasLocais(atual => ({janela, voltas: [...(atual.janela === janela ? atual.voltas : []), volta]}));
     setLapsTime(Date.now());
   }, [janela, timeframe.to]);
-  // No replay, o seletor de piloto lista quem correu no PERÍODO — isso vem das
-  // voltas, não da telemetria já reproduzida, que é de um piloto só.
-  const lapDrivers = useMemo(() => {
-    const porPiloto = new Map<string, Telemetry>();
-    for (const lap of lapResults) if (!porPiloto.has(driverKey(lap))) porPiloto.set(driverKey(lap), lap);
-    return [...porPiloto.values()];
-  }, [lapResults]);
   const drivers = useMemo(() => applyLapResults(summarize(events), lapResults), [events, lapResults]);
-  // No replay o seletor de piloto filtra a TABELA de voltas; o mapa mostra a
-  // volta escolhida inteira, senão trocar o filtro depois de dar play apagaria
-  // o carro da pista.
-  const filtered = useMemo(() => mode === 'replay' || selected === 'all' ? events : events.filter(e => driverKey(e) === selected), [mode, events, selected]);
-  // Em "Todos os pilotos" o card segue quem está na pista agora, não quem lidera:
-  // o pódio e a classificação já respondem "quem é o mais rápido", e o painel ao
-  // lado anuncia a última leitura recebida. `drivers` vem ordenado por melhor volta.
-  const focus = selected === 'all'
-    ? drivers.reduce<Driver | undefined>((recent, d) => !recent || Date.parse(d.timestamp) > Date.parse(recent.timestamp) ? d : recent, undefined)
-    : drivers.find(d => d.key === selected);
-  // Drill down: uma linha por volta, do piloto selecionado (ou de todos), dentro
-  // do período escolhido. A mais recente primeiro.
-  const laps = useMemo(() => lapResults
-    .filter(l => selected === 'all' || driverKey(l) === selected)
-    .filter(l => filtroRig === 'all' || l['rig.id'] === filtroRig)
-    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, selected, filtroRig]);
-  const ranking = useMemo<Ranked[]>(() => {
-    const ordem = lapsByTime(lapResults), melhor = ordem[0]?.last_lap_s ?? null;
-    return ordem.map((l,i) => ({...l, position: i+1, gap_s: melhor !== null && finite(l.last_lap_s) ? l.last_lap_s - melhor : null}));
-  }, [lapResults]);
-  const opcoesRig = useMemo(() => [...new Set(lapResults.map(l => l['rig.id']))].sort(), [lapResults]);
-  const peak = topSpeedOf(events) ?? 0;
+  // O card segue quem está na pista agora, não quem lidera: o pódio e a
+  // classificação já respondem "quem é o mais rápido", e o painel ao lado
+  // anuncia a última leitura recebida. `drivers` vem ordenado por melhor volta.
+  const focus = drivers.reduce<Driver | undefined>((recent, d) => !recent || Date.parse(d.timestamp) > Date.parse(recent.timestamp) ? d : recent, undefined);
+  // Voltas do Replay: uma linha por volta, dentro do período e dos filtros. A
+  // mais recente primeiro. Os filtros só mexem nas tabelas, nunca no mapa.
+  const laps = useMemo(() => filtrarVoltas(lapResults, filtro)
+    .sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)), [lapResults, filtro]);
+  // `ranking` é a classificação geral (pódio, melhor volta, posição da volta
+  // recém-concluída). A TABELA usa a filtrada, renumerada dentro do filtro.
+  const ranking = useMemo<Ranked[]>(() => classificar(lapResults), [lapResults]);
+  const rankingFiltrado = useMemo<Ranked[]>(() => classificar(filtrarVoltas(lapResults, filtro)), [lapResults, filtro]);
+  const filtroAtivo = filtro.piloto !== TODOS || filtro.empresa !== TODOS || filtro.carro !== TODOS;
+  const semVoltas = filtroAtivo ? 'Nenhuma volta com esses filtros no período selecionado.' : 'Nenhuma volta concluída no período selecionado.';
+  // Indicadores e pódio seguem os mesmos filtros da classificação. Velocidade
+  // máxima: a da telemetria ao vivo que passa no filtro; sem ninguém do filtro
+  // na pista agora, a maior das voltas do período (mesma régua da coluna
+  // "Vel. máxima" da tabela).
+  const eventosFiltrados = useMemo(() => filtrarVoltas(events, filtro), [events, filtro]);
+  const picoAoVivo = topSpeedOf(eventosFiltrados);
+  const picoPeriodo = useMemo(() => {
+    const v = filtrarVoltas(lapResults, filtro).map(l => l.top_speed_kmh).filter((x): x is number => finite(x));
+    return v.length ? Math.max(...v) : null;
+  }, [lapResults, filtro]);
+  const melhorFiltrada = rankingFiltrado[0] ?? null;
   // `ranking` já vem da mais rápida para a mais lenta, então a primeira volta de
   // cada empresa é a melhor dela. Antes isso passava por um "melhor de cada
   // piloto" no meio, e a volta certa se perdia quando o mesmo piloto tinha mais
   // de uma. Voltas sem empresa preenchida não entram no pódio.
   // Por ora, pilotos em vez de empresas — pedido explícito, mantém a mesma
   // lógica (primeira ocorrência de cada um no ranking já ordenado por tempo).
-  const pilotosPodio = useMemo(() => driverPodium(ranking, 3), [ranking]);
+  const pilotosPodio = useMemo(() => driverPodium(rankingFiltrado, 3), [rankingFiltrado]);
   // Dynatrace Intelligence: três observações calculadas do que já está
   // carregado (telemetria do período + voltas concluídas), sem consulta nova
   // ao Grail nem IA externa.
@@ -452,7 +466,7 @@ export const Dashboard = () => {
   // Relógio único do Ao vivo (carro no mapa + painel do piloto) e a trilha do
   // piloto em foco, de onde o painel lê a amostra no instante do relógio.
   const liveClock = useMemo(() => createLiveClock(), []);
-  const trilhas = useMemo(() => trails(filtered), [filtered]);
+  const trilhas = useMemo(() => trails(events), [events]);
   const focusKey = focus?.key;
   const focusTrail = useMemo(() => focusKey ? trilhas.find(t => driverKey(t[0]) === focusKey) : undefined, [trilhas, focusKey]);
   const lapLoading = lapBiz.isLoading || lapOtel.isLoading;
@@ -468,18 +482,17 @@ export const Dashboard = () => {
   // Pulso de tempo real. Calculado a cada render de propósito: depende de
   // Date.now(), então memorizar por `tick` só esconderia a dependência real.
   // São 10.000 iterações no pior caso, abaixo de um milissegundo.
-  const pulse = ((): {fresh:number; rigs:number; silentFor:number|null} | null => {
+  const pulse = ((): {fresh:number; silentFor:number|null} | null => {
     void tick;
     if (!pulsing) return null;
     const now = Date.now(), window = 60000;
     let newest = 0, fresh = 0;
-    const rigs = new Set<string>();
     for (const e of events) {
       const at = Date.parse(e.timestamp);
       if (at > newest) newest = at;
-      if (now - at <= window) { fresh++; rigs.add(e['rig.id']); }
+      if (now - at <= window) fresh++;
     }
-    return { fresh, rigs: rigs.size, silentFor: newest ? Math.round((now - newest) / 1000) : null };
+    return { fresh, silentFor: newest ? Math.round((now - newest) / 1000) : null };
   })();
   // Quem está na pista AGORA, não só o mais recente: com 2+ simuladores
   // rodando ao mesmo tempo, cada piloto com telemetria fresca (mesma janela
@@ -487,7 +500,7 @@ export const Dashboard = () => {
   // piloto nem limite de quantidade — cabe quantos simuladores existirem.
   const pilotosAoVivo = ((): Driver[] => {
     void tick;
-    if (mode !== 'live' || selected !== 'all') return focus ? [focus] : [];
+    if (mode !== 'live') return focus ? [focus] : [];
     // Reinício do coletor (ou troca de piloto) no mesmo rig pode deixar a
     // sessão antiga órfã, mas ainda "fresca" — sem latestSessionDrivers ela
     // vira um segundo cartão fantasma do mesmo simulador.
@@ -495,19 +508,19 @@ export const Dashboard = () => {
   })();
   const changeMode = (value: string) => {
     setMode(value); refresh(); setPlaying(false); setCursor(0); setReplayLap(null);
-    setSelected('all'); setFiltroRig('all');
+    setFiltro(SEM_FILTRO);
   };
   // O tempo da volta É o botão: clicar nele reproduz aquela volta. Uma coluna
   // separada de ação duplicaria o alvo de clique sem dizer nada a mais.
   const replayColumns = useMemo<DataTableColumnDef<Telemetry>[]>(() => [
     { id: 'at', header: 'Concluída em', accessor: row => new Date(row.timestamp).toLocaleString('pt-BR'), minWidth: 165, sortType: 'number', sortAccessor: row => Date.parse(row.timestamp) },
     { id: 'driver', header: 'Piloto', accessor: 'driver_name', minWidth: 130 },
+    { id: 'company', header: 'Empresa', accessor: row => row.company_name ?? '—', minWidth: 130 },
     { id: 'time', header: 'Tempo · clique para reproduzir', accessor: 'last_lap_s', minWidth: 215, sortType: 'number', sortAccessor: row => row.last_lap_s ?? Infinity,
       cell: ({rowData}) => <Button variant="emphasized" onClick={() => setReplayLap(rowData)}>{lapTime(rowData.last_lap_s)}</Button> },
     ...SECTOR_COLUMNS,
     TOP_SPEED_COLUMN,
     { id: 'car', header: 'Carro', accessor: row => row.car_name ?? 'Não informado', minWidth: 160 },
-    { id: 'rig', header: 'Simulador', accessor: row => row['rig.id'], minWidth: 105 },
   ], []);
   const abas = TABS.filter(t => t.id !== 'stream' || isLocal);
   const abaAtual = Math.max(0, abas.findIndex(t => t.id === mode));
@@ -515,9 +528,9 @@ export const Dashboard = () => {
   const mapa = (legenda: string, progresso?: React.ReactNode) => <section className="panel track-panel">
     <div className="panel-heading"><div><span className="eyebrow">AUTÓDROMO JOSÉ CARLOS PACE</span><Heading level={2}>Interlagos <span className="track-country">BR</span></Heading></div><span className="track-distance">4,295 <small>km</small></span></div>
     <div className="metric-tabs mixed-legend" aria-label="Legenda do mapa combinado"><span><i className="legend-dot speed_kmh"/>Velocidade</span><span><i className="legend-dot brake_pct"/>Frenagem</span><span><i className="legend-dot acceleration_g"/>Aceleração</span></div>
-    <TrackMap events={filtered} carName={focus?.car_name} liveClock={mode === 'live' ? liveClock : undefined} />
+    <TrackMap events={events} carName={focus?.car_name} liveClock={mode === 'live' ? liveClock : undefined} />
     {mode === 'live' && <DetectorDeVoltas liveClock={liveClock} voltas={voltasAoVivo} onVolta={aoConcluirVolta}/>}
-    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{filtered.length ? `${number(filtered.length)} eventos recebidos` : legenda}</span></div>
+    <div className="map-footer"><div><span className="eyebrow">MAPA DE CALOR COMBINADO</span><p className="muted">Azul: velocidade · vermelho: freio · verde: aceleração em g.<br/>Mistura por intensidade relativa. Cinza: sem dados.</p></div><span className="muted">{events.length ? `${number(events.length)} eventos recebidos` : legenda}</span></div>
     {progresso}
   </section>;
 
@@ -526,14 +539,17 @@ export const Dashboard = () => {
   const secaoTelemetria = (amostra: Telemetry | undefined, tempoDeVolta: number | null | undefined, voltaConcluida: number | null = null) =>
     <section className="panel telemetry-panel"><div className="panel-heading"><Heading level={3}>Telemetria do piloto</Heading>{voltaConcluida !== null && <span className="volta-concluida" role="status">Volta concluída <b>{ranking.filter(l => (l.last_lap_s ?? Infinity) < voltaConcluida).length + 1}º · {lapTime(voltaConcluida)}</b></span>}</div><div className="stats-grid"><Stat label="Velocidade" value={number(amostra?.speed_kmh,1)} unit="km/h"/><Stat label="Aceleração" value={number(amostra?.acceleration_g,2)} unit="g"/><Stat label="Marcha" value={amostra?.gear === -1 ? 'R' : amostra?.gear === 0 ? 'N' : number(amostra?.gear)}/><Stat label="Frenagem" value={number(amostra?.brake_pct)} unit="%"/><Stat label="Volta atual" value={number(amostra?.lap_number)}/><Stat label="Tempo de volta" value={lapTime(tempoDeVolta)}/></div><div className="coordinate-row"><span>Posição na pista</span><code>X {number(amostra?.pos_x,1)} <span> / </span> Y {number(amostra?.pos_y,1)}</code></div><div className="coordinate-row"><span>Última volta registrada</span><strong>{lapTime(amostra?.last_lap_s)}</strong></div><div className="coordinate-row"><span>{referenceLap ? `Contra a melhor volta · ${referenceLap.driver_name ?? 'líder'} ${lapTime(referenceLap.last_lap_s)}` : 'Contra a melhor volta'}</span>{(() => { const delta = deltaDe(amostra); return <strong className={delta === null ? '' : delta < 0 ? 'delta-ganhando' : 'delta-perdendo'}>{delta === null ? '—' : `${delta < 0 ? '−' : '+'}${Math.abs(delta).toFixed(2)} s`}</strong>; })()}</div></section>;
 
-  const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>{piloto?.['rig.id'] ?? 'Sem simulador'}</span><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
+  const cartaoDoPiloto = (piloto: Driver | undefined, subtitulo: string) => <section className="panel driver-card"><div className="panel-heading"><span className="eyebrow">{piloto?.best ? 'PILOTO EM DESTAQUE' : 'PILOTO NA PISTA'}</span><span className="muted">{subtitulo}</span></div><div className="driver-title"><span className="driver-avatar">{piloto?.driver_name?.slice(0,2).toUpperCase() ?? '—'}</span><div><Heading level={2}>{piloto?.driver_name ?? 'Aguardando piloto'}</Heading><p>{piloto?.car_name ?? 'Carro não informado'}</p><p className="muted">Telemetria: Automobilista 2</p></div></div><div className="driver-bottom"><span>Posição na corrida <b>{number(piloto?.lap_race_position)}</b></span></div></section>;
 
   // Um cartão por piloto com telemetria fresca, não só o mais recente — com
   // 2+ simuladores ativos ao mesmo tempo, cada piloto ganha a própria COLUNA,
   // lado a lado com o mapa (não empilhadas uma embaixo da outra). Cada
   // <div className="driver-column"> aqui é filho direto do .hero-grid, que
   // troca pra layout flex-wrap quando há mais de uma (ver hero-grid-multi).
-  const painelDoPiloto = (subtitulo: string) => mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1
+  // Classificação do Ao vivo e do Placar. Os filtros ficam logo acima da
+  // tabela; a contagem e a numeração seguem as voltas filtradas.
+  const tabelaClassificacao = (descricao: string) => <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Classificação das voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(rankingFiltrado.length)} {rankingFiltrado.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">{descricao}</p><FiltrosDeVoltas voltas={lapResults} filtro={filtro} onChange={setFiltro}/><DataTable key={janela} data={rankingFiltrado} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.Pagination defaultPageSize={RANKING_PAGE_SIZE} autoResetPageIndex={false}/><DataTable.EmptyState>{semVoltas}</DataTable.EmptyState></DataTable></section>;
+  const painelDoPiloto = (subtitulo: string) => mode === 'live' && pilotosAoVivo.length > 1
     ? <>{pilotosAoVivo.map(piloto => {
         const trilha = trilhas.find(t => driverKey(t[0]) === piloto.key);
         return <div className="driver-column" key={piloto.key}>
@@ -554,12 +570,12 @@ export const Dashboard = () => {
     <section className="podium" aria-label="Ranking de pilotos">{[0,1,2].map(i => <div className={`panel company place-${i+1}`} key={i}><span className="place"><Posicao posicao={i+1}/></span><div><strong>{pilotosPodio[i]?.driver_name ?? 'Aguardando piloto'}</strong><p>{pilotosPodio[i] ? (pilotosPodio[i].car_name ?? 'Carro não informado') : 'Sem volta concluída associada'}</p></div><b>{lapTime(pilotosPodio[i]?.last_lap_s)}</b></div>)}</section></>;
 
   const indicadores = <section className="kpis">
-    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{mode === 'live' ? `Ao vivo · ${LIVE_WINDOW_LABEL}` : 'Nesta reprodução'}</p></div><strong>{events.length ? number(peak,1) : '—'} <small>km/h</small></strong><div className="kpi-line blue"/></div>
+    <div className="panel kpi"><div><span className="eyebrow">VELOCIDADE MÁXIMA</span><p>{[picoAoVivo !== null || picoPeriodo === null ? (mode === 'live' ? `Ao vivo · ${LIVE_WINDOW_LABEL}` : 'Nesta reprodução') : 'Maior das voltas do período', filtroAtivo ? 'com os filtros da classificação' : null].filter(Boolean).join(' · ')}</p></div><strong>{number(picoAoVivo ?? picoPeriodo, 1)} <small>km/h</small></strong><div className="kpi-line blue"/></div>
     {/* A volta mais rápida do PERÍODO, não "a mais rápida entre quem está com
         telemetria ao vivo agora": referenceLap já é o #1 do ranking (mesma
         fonte da tabela abaixo), então o KPI não depende de o piloto recorde
         ainda estar streaming neste exato instante. */}
-    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{referenceLap ? `${referenceLap.driver_name ?? 'Piloto sem nome'} · calculada das voltas concluídas` : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(referenceLap?.last_lap_s)}</strong><div className="kpi-line purple"/></div>
+    <div className="panel kpi"><div><span className="eyebrow">MELHOR VOLTA REGISTRADA</span><p>{melhorFiltrada ? `${melhorFiltrada.driver_name ?? 'Piloto sem nome'} · ${filtroAtivo ? 'com os filtros da classificação' : 'calculada das voltas concluídas'}` : filtroAtivo ? 'Nenhuma volta com esses filtros' : 'Aguardando uma volta concluída'}</p></div><strong>{lapTime(melhorFiltrada?.last_lap_s)}</strong><div className="kpi-line purple"/></div>
   </section>;
 
   // ---------- Tela 1: ao vivo (e o script local, que é a mesma tela) ----------
@@ -569,20 +585,20 @@ export const Dashboard = () => {
     {mode === 'live' && !liveLoading && !live.error && !events.length && <div className="notice" role="status">Nenhum evento racing.telemetry de Interlagos chegou nos {LIVE_WINDOW_LABEL}. Confira se o rig está enviando. A classificação abaixo segue o período selecionado.</div>}
     {mode === 'live' && !live.error && liveOtel.error && <div className="notice" role="status">A fonte OTel (logs do collector do rig) não respondeu: {liveOtel.error.message}. O painel segue mostrando os business events.</div>}
     {mode === 'live' && events.length >= 10000 && <div className="notice">Exibindo os 10.000 eventos mais recentes. O mapa e os indicadores representam essa amostra.</div>}
-    <div className={`hero-grid${mode === 'live' && selected === 'all' && pilotosAoVivo.length > 1 ? ' hero-grid-multi' : ''}`}>
+    <div className={`hero-grid${mode === 'live' && pilotosAoVivo.length > 1 ? ' hero-grid-multi' : ''}`}>
       {mapa('Pista cinza · aguardando eventos', mode === 'stream' && stream.running ? <progress aria-label="Progresso da simulação" max={stream.total} value={events.length}/> : undefined)}
       {painelDoPiloto(mode === 'live' ? `Última leitura · ${LIVE_WINDOW_LABEL}` : 'Dados de demonstração')}
     </div>
     {indicadores}
     {podioEmpresas}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Classificação das voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">Todas as voltas do período escolhido no seletor acima, da mais rápida para a mais lenta, {RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. O mapa e a telemetria ao lado mostram sempre os {LIVE_WINDOW_LABEL}.</p><DataTable key={janela} data={ranking} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.Pagination defaultPageSize={RANKING_PAGE_SIZE} autoResetPageIndex={false}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    {tabelaClassificacao(`Todas as voltas do período escolhido no seletor acima, da mais rápida para a mais lenta, ${RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. O mapa e a telemetria ao lado mostram sempre os ${LIVE_WINDOW_LABEL}.`)}
   </>;
 
   // ---------- Tela 2: histórico ----------
   const telaHistorico = <>
     {liveLaps.error && <div className="notice error" role="alert">Não foi possível consultar as voltas concluídas: {liveLaps.error.message}</div>}
     {podioEmpresas}
-    <section className="panel leaderboard"><div className="panel-heading"><div><span className="eyebrow">CLASSIFICAÇÃO</span><Heading level={2}>Classificação das voltas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(ranking.length)} {ranking.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div><p className="muted">Todas as voltas do período, da mais rápida para a mais lenta, {RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.</p><DataTable key={janela} data={ranking} columns={rankColumns} fullWidth sortable loading={liveLapsLoading}><DataTable.Pagination defaultPageSize={RANKING_PAGE_SIZE} autoResetPageIndex={false}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado.</DataTable.EmptyState></DataTable></section>
+    {tabelaClassificacao(`Todas as voltas do período, da mais rápida para a mais lenta, ${RANKING_PAGE_SIZE} por página. Um piloto pode ocupar mais de uma posição. A tabela só recarrega quando você pedir.`)}
   </>;
 
   // ---------- Tela 3: replay ----------
@@ -597,12 +613,8 @@ export const Dashboard = () => {
     </div>
     <section className="panel leaderboard">
       <div className="panel-heading"><div><span className="eyebrow">VOLTAS DO PERÍODO</span><Heading level={2}>Voltas registradas</Heading></div><Flex alignItems="center" gap={8}><span className="small-tag">{number(laps.length)} {laps.length === 1 ? 'volta' : 'voltas'}</span><Button onClick={atualizarVoltas} loading={liveLapsLoading}>Atualizar</Button></Flex></div>
-      <Flex alignItems="center" gap={8} flexWrap="wrap" className="filtros-replay">
-        <span className="muted">Filtrar por</span>
-        <Select aria-label="Filtrar por piloto" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{lapDrivers.map(l => <Select.Option key={driverKey(l)} value={driverKey(l)}>{l.driver_name ?? 'Piloto sem nome'}</Select.Option>)}</Select.Content></Select>
-        <Select aria-label="Filtrar por simulador" value={filtroRig} onChange={v => setFiltroRig(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os simuladores</Select.Option>{opcoesRig.map(r => <Select.Option key={r} value={r}>{r}</Select.Option>)}</Select.Content></Select>
-      </Flex>
-      <DataTable data={laps} columns={replayColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>Nenhuma volta concluída no período selecionado. Amplie o intervalo.</DataTable.EmptyState></DataTable>
+      <FiltrosDeVoltas voltas={lapResults} filtro={filtro} onChange={setFiltro}/>
+      <DataTable data={laps} columns={replayColumns} fullWidth loading={liveLapsLoading} sortable><DataTable.Pagination defaultPageSize={20}/><DataTable.EmptyState>{filtroAtivo ? semVoltas : 'Nenhuma volta concluída no período selecionado. Amplie o intervalo.'}</DataTable.EmptyState></DataTable>
     </section>
   </>;
 
@@ -697,22 +709,19 @@ export const Dashboard = () => {
         </svg>
       </div>
       <div className="status-group">
-        {mode !== 'stream' && <TimeframeSelector aria-label={mode === 'live' ? 'Período da classificação' : 'Período dos eventos'} value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setSelected('all');setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
+        {mode !== 'stream' && <TimeframeSelector aria-label={mode === 'live' ? 'Período da classificação' : 'Período dos eventos'} value={timeframe} onChange={value => {if (value) {setTimeframe({from:value.from.value,to:value.to.value});refresh();setFiltro(SEM_FILTRO);setReplayLap(null);setCursor(0);setPlaying(false);}}} />}
         <div className="status"><span className={`status-dot ${(mode === 'stream' && stream.running) || (mode === 'live' && events.length) ? 'active' : ''}`}/>{mode === 'stream' ? stream.error ? 'Gerador desconectado' : stream.running ? 'Recebendo eventos do script' : events.length ? 'Simulação pausada ou concluída' : 'Pronto para iniciar' : mode === 'replay' ? replayLap ? `${lapTime(replayLap.last_lap_s)} de ${replayLap.driver_name ?? 'piloto'}` : 'Escolha uma volta para reproduzir' : mode === 'history' ? `${number(ranking.length)} piloto(s) no período` : mode === 'intelligence' ? `${number(ranking.length)} ${ranking.length === 1 ? 'volta analisada' : 'voltas analisadas'}` : liveLoading ? 'Consultando telemetria' : events.length ? 'Dados do Grail' : `Sem telemetria nos ${LIVE_WINDOW_LABEL}`}</div>
         {pulse && <div className="status live-pulse" role="status" aria-live="polite" title="Amostras recebidas no último minuto">
           <span className={`status-dot ${pulse.fresh ? 'active beating' : ''}`}/>
           {pulse.fresh
-            ? `Ao vivo · ${number(pulse.fresh)} amostras/min · ${pulse.rigs} ${pulse.rigs === 1 ? 'simulador' : 'simuladores'}`
+            ? `Ao vivo · ${number(pulse.fresh)} amostras/min`
             : pulse.silentFor === null ? 'Aguardando telemetria ao vivo' : `Sem telemetria há ${number(pulse.silentFor)}s`}
         </div>}
       </div>
     </header>
     <section className="toolbar" aria-label="Controles da corrida">
-      <Flex alignItems="center" gap={12} flexWrap="wrap">
-        {mode === 'live' && <Select aria-label="Piloto e sessão" value={selected} onChange={v => setSelected(v ?? 'all')}><Select.Content><Select.Option value="all">Todos os pilotos</Select.Option>{drivers.map(d => <Select.Option key={d.key} value={d.key}>{d.driver_name ?? 'Piloto sem nome'} · {d['rig.id']}</Select.Option>)}</Select.Content></Select>}
-      </Flex>
       <Flex alignItems="center" gap={8}>
-        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {setSelected('all');void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {setSelected('all');void stream.command('reset');}}>Limpar pista</Button></>
+        {mode === 'stream' ? <><span className="muted">{stream.speed}× · demonstração local</span><Button variant="emphasized" loading={stream.busy} disabled={Boolean(stream.error)} onClick={() => {void stream.command(stream.running ? 'pause' : !events.length || events.length >= stream.total ? 'start' : 'resume');}}>{stream.running ? 'Pausar' : !events.length ? 'Iniciar simulação' : events.length >= stream.total ? 'Repetir volta' : 'Continuar'}</Button><Button disabled={stream.busy || !events.length} onClick={() => {void stream.command('reset');}}>Limpar pista</Button></>
           : mode === 'replay' ? <>{replayLap && <span className="muted">{lapLoading ? 'Carregando a volta…' : `${number(lapSamples.length)} amostras · 1×`}</span>}<Button variant="emphasized" disabled={!lapSamples.length} onClick={() => { if (cursor >= lapSamples.length) setCursor(0); setPlaying(!playing); }}>{playing ? 'Pausar' : cursor && cursor < lapSamples.length ? 'Continuar' : 'Reproduzir de novo'}</Button><Button disabled={!replayLap} onClick={() => {setReplayLap(null);setCursor(0);setPlaying(false);}}>Limpar pista</Button></>
           // forceRefetch, não refetch: o botão existe para o operador pedir
           // dado novo NA HORA - refetch() respeita o staleTime e podia não
