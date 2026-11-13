@@ -114,6 +114,15 @@ Troquei o piloto e o nome nao mudou no Dynatrace
 O contador nao sobe com o jogo aberto
     o Passo 3 nao foi feito, ou o jogo nao esta numa sessao de pista
 
+"ignorando o UDP que chega de 192.168.x.x"
+    normal com dois ou mais simuladores na mesma rede, e nao precisa
+    configurar nada: o AMS2 manda a telemetria para a rede inteira, e o
+    programa so' aceita a do jogo DESTE PC. A do vizinho e' descartada
+    (contador "outro PC ignorado").
+
+"nenhum pacote do jogo DESTE PC chegou ainda"
+    o AMS2 deste PC esta fechado, no menu, ou sem o UDP ligado (Passo 3).
+
 A internet caiu no meio
     nao tem problema: o collector guarda na pasta fila-otel e reenvia
     sozinho quando a conexao voltar

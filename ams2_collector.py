@@ -589,6 +589,118 @@ class Dispatcher:
             fila.drenar()
 
 
+def enderecos_deste_pc() -> set:
+    """IPv4 deste computador: loopback, os de cada placa de rede e o da rota
+    padrao (descoberto sem enviar nada: connect() em UDP so' escolhe a placa)."""
+    ips = {"127.0.0.1"}
+    try:
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sonda:
+            sonda.connect(("192.0.2.1", 9))  # TEST-NET-1: endereco de documentacao
+            ips.add(sonda.getsockname()[0])
+    except OSError:
+        pass
+    return ips
+
+
+def ip_deste_pc(ip: str) -> bool:
+    """Pergunta ao sistema: abrir uma porta neste IP so' funciona se ele for de
+    uma placa de rede DESTE computador. Resposta definitiva, sem depender de
+    nenhuma lista."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as teste:
+            teste.bind((ip, 0))
+        return True
+    except OSError:
+        return False
+
+
+class FiltroDeOrigem:
+    """So' aceita o UDP do jogo que roda NESTE PC.
+
+    O AMS2 manda a telemetria em broadcast para a rede inteira. Com dois
+    simuladores na mesma rede, cada coletor recebia os pacotes dos dois jogos:
+    as amostras alternavam entre os dois carros e a volta de um piloto entrava
+    tambem no placar do outro (visto em 13/11: 1.267 amostras identicas nas
+    sessoes dos dois rigs). O pacote do proprio jogo chega com um IP deste
+    computador; o do vizinho, com o IP do outro PC, e e' descartado.
+
+    Nada a configurar. Os IPs deste PC vem de tres fontes: o que o Windows
+    lista; uma sonda - o coletor manda um pacote de 8 bytes em broadcast na
+    propria porta e anota o IP com que ele mesmo chega, que e' exatamente o IP
+    com que o broadcast do jogo deste PC chega (run_udp); e, para qualquer IP
+    desconhecido, a pergunta direta ao sistema (ip_deste_pc). Tudo e' revisto
+    (no maximo a cada REVER_S) quando chega um pacote de origem desconhecida:
+    o PC pode trocar de IP no meio do evento (DHCP).
+
+    Se so' chegam pacotes de fora e nenhum deste PC, avisa no console em vez
+    de ficar mudo."""
+
+    REVER_S = 10.0
+    # ~5 s de jogo: o AMS2 manda dezenas de pacotes por segundo, mesmo no menu.
+    PACOTES_ATE_AVISAR = 200
+
+    def __init__(self, aceitar_qualquer: bool = False, extras=(), obter_locais=enderecos_deste_pc,
+                 relogio=time.monotonic, sondar=None, eh_deste_pc=ip_deste_pc):
+        self.aceitar_qualquer = aceitar_qualquer
+        self._extras = set(extras)
+        self._obter_locais = obter_locais
+        self._relogio = relogio
+        self._sondar = sondar or (lambda: None)
+        self._eh_deste_pc = eh_deste_pc
+        self._de_fora: dict = {}  # ip -> instante em que o sistema disse "nao e' deste PC"
+        self._da_sonda: set = set()
+        self.locais = set() if aceitar_qualquer else obter_locais() | self._extras
+        self._revisto_em = relogio()
+        self.aceitos = 0
+        self.ignorados = 0
+        self.origens_ignoradas: set = set()
+        self.avisou_sem_local = False
+        if not aceitar_qualquer:
+            self._sondar()
+
+    def sonda_voltou(self, ip: str) -> None:
+        """A sonda deste coletor chegou com este IP: e' um IP deste PC."""
+        self._da_sonda.add(ip)
+        self.locais.add(ip)
+
+    def aceita(self, ip: str) -> bool:
+        if self.aceitar_qualquer or ip in self.locais or ip.startswith("127."):
+            self.aceitos += 1
+            return True
+        agora = self._relogio()
+        if agora - self._revisto_em >= self.REVER_S:
+            self.locais = self._obter_locais() | self._extras | self._da_sonda
+            self._revisto_em = agora
+            self._sondar()
+            if ip in self.locais:
+                self.aceitos += 1
+                return True
+        visto = self._de_fora.get(ip)
+        if visto is None or agora - visto >= self.REVER_S:
+            if self._eh_deste_pc(ip):
+                self.locais.add(ip)
+                self._de_fora.pop(ip, None)
+                self.aceitos += 1
+                return True
+            self._de_fora[ip] = agora
+        self.ignorados += 1
+        if ip not in self.origens_ignoradas:
+            self.origens_ignoradas.add(ip)
+            print(f"\n[i] ignorando o UDP que chega de {ip}: e' o jogo de outro PC da rede, nao o deste simulador",
+                  flush=True)
+        if not self.aceitos and not self.avisou_sem_local and self.ignorados >= self.PACOTES_ATE_AVISAR:
+            self.avisou_sem_local = True
+            origens = ", ".join(sorted(self.origens_ignoradas))
+            print(f"\n[!!] nenhum pacote do jogo DESTE PC chegou ainda, so' de outro(s) simulador(es) da rede"
+                  f" ({origens}).\n     Confira se o AMS2 deste PC esta aberto, numa sessao de pista, com o UDP"
+                  f" ligado (Passo 3 do LEIAME).", flush=True)
+        return False
+
+
 def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = None) -> int:
     # O HackathonRacing.exe cria o coletor antes, para ligar a tela "Trocar
     # piloto" nele; pela linha de comando ele nasce aqui.
@@ -596,16 +708,46 @@ def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = Non
                                        args.driver_name, args.sample_hz, getattr(args, "company_name", None))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.bind, args.port))
+    # Sonda da origem (ver FiltroDeOrigem): 8 bytes aleatorios em broadcast na
+    # porta do jogo. Menor que o cabecalho de 12 bytes do AMS2, entao nenhum
+    # coletor - nem os antigos, sem filtro - a confunde com telemetria.
+    sonda = os.urandom(8)
+
+    def sondar() -> None:
+        # Broadcast geral (o que o AMS2 usa no Windows) e o de cada sub-rede
+        # deste PC, para o caso de o sistema recusar o geral.
+        destinos = {"255.255.255.255"} | {ip.rsplit(".", 1)[0] + ".255"
+                                          for ip in enderecos_deste_pc() if not ip.startswith("127.")}
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as envio:
+                envio.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                for destino in destinos:
+                    try:
+                        envio.sendto(sonda, (destino, args.port))
+                    except OSError:
+                        pass
+        except OSError:
+            pass  # sem rede: ficam os IPs que o sistema lista
+
+    origem = FiltroDeOrigem(getattr(args, "aceitar_qualquer_origem", False), getattr(args, "aceitar_udp_de", ()),
+                            sondar=sondar)
     print(f"[info] coletor {VERSAO} escutando UDP em {args.bind}:{args.port} (rig={args.rig_id}) - Ctrl+C para parar")
     print(f"[info] destino: {dispatcher.describe()}")
+    print("[info] UDP aceito de: " + ("qualquer origem" if origem.aceitar_qualquer
+                                      else f"so' deste PC ({', '.join(sorted(origem.locais))})"))
 
     batch = []
     sent = 0
     last_flush = time.time()
     try:
         while True:
-            raw, _addr = sock.recvfrom(4096)
-            ev = collector.handle_packet(raw)
+            raw, addr = sock.recvfrom(4096)
+            if raw == sonda:
+                origem.sonda_voltou(addr[0])
+                continue
+            if len(raw) < 12:
+                continue  # sonda de outro coletor da rede: nao e' do jogo
+            ev = collector.handle_packet(raw) if origem.aceita(addr[0]) else None
             if ev:
                 if not dispatcher.enabled():
                     print(json.dumps(ev, ensure_ascii=False))
@@ -616,7 +758,8 @@ def run_udp(args, dispatcher: "Dispatcher", collector: Optional[Collector] = Non
                 sent += len(batch)
                 batch = []
                 last_flush = time.time()
-                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s)   ",
+                vizinho = f" | outro PC ignorado: {origem.ignorados}" if origem.ignorados else ""
+                print(f"[{VERSAO}] {sent} amostras enviadas | fila: {dispatcher.pendentes()} lote(s){vizinho}   ",
                       end="\r", flush=True)
     except KeyboardInterrupt:
         print("\n[info] interrompido pelo usuario")
@@ -718,6 +861,15 @@ def main() -> int:
     parser.add_argument(
         "--otlp-endpoint", default=os.environ.get("RACING_OTLP_ENDPOINT", DEFAULT_OTLP_ENDPOINT),
         help=f"[otlp] receiver do OTel Collector local (default: {DEFAULT_OTLP_ENDPOINT})",
+    )
+    parser.add_argument(
+        "--aceitar-qualquer-origem", action="store_true",
+        help="[udp] aceita pacotes de qualquer maquina da rede (padrao: so' do jogo deste PC; use quando o "
+             "coletor roda num PC diferente do jogo)",
+    )
+    parser.add_argument(
+        "--aceitar-udp-de", action="append", default=[], metavar="IP",
+        help="[udp] aceita tambem os pacotes deste IP (pode repetir), alem dos deste PC",
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
