@@ -10,7 +10,9 @@ from ams2_collector import (
     Collector,
     ConexaoHttp,
     EnvioEmSegundoPlano,
+    FiltroDeOrigem,
     build_otlp_payload,
+    enderecos_deste_pc,
     post_otlp,
 )
 from ams2_protocol import decode_header
@@ -405,6 +407,85 @@ class DriverSwapTests(unittest.TestCase):
         self._pacote(_tempo_anunciado(99.0, 99.0), 100.0)
         bruno = self.coletor.handle_packet(self.quadro, 100.1)
         self.assertEqual((99.0, 99.0), (bruno["last_lap_s"], bruno["best_lap_s"]))
+
+
+class FiltroDeOrigemTests(unittest.TestCase):
+    """Dois simuladores na mesma rede: cada coletor so' aceita o jogo do proprio PC."""
+
+    def setUp(self):
+        self.agora = 0.0
+        self.ips_do_pc = {"127.0.0.1", "192.168.0.10"}  # o que o sistema LISTA
+        self.ips_reais: set = set()                     # o que o sistema CONFIRMA (bind)
+        self.sondas = 0
+
+    def _filtro(self, **kw):
+        def sondar():
+            self.sondas += 1
+        return FiltroDeOrigem(obter_locais=lambda: set(self.ips_do_pc), relogio=lambda: self.agora,
+                              sondar=sondar, eh_deste_pc=lambda ip: ip in self.ips_reais, **kw)
+
+    def test_address_missing_from_the_list_is_confirmed_by_the_system(self):
+        self.ips_do_pc = {"127.0.0.1"}   # listagem falhou
+        self.ips_reais = {"172.20.1.7"}  # mas o IP e' mesmo desta maquina
+        filtro = self._filtro()
+        self.assertTrue(filtro.aceita("172.20.1.7"), "nunca deixa o rig mudo por falha da listagem")
+        self.assertFalse(filtro.aceita("172.20.1.8"))
+
+    def test_bind_check_tells_this_machine_from_another(self):
+        from ams2_collector import ip_deste_pc
+        self.assertTrue(ip_deste_pc("127.0.0.1"))
+        self.assertFalse(ip_deste_pc("192.0.2.123"), "endereco de documentacao, de ninguem")
+
+    def test_game_on_this_pc_is_accepted_and_the_neighbor_is_dropped(self):
+        filtro = self._filtro()
+        self.assertTrue(filtro.aceita("192.168.0.10"))
+        self.assertTrue(filtro.aceita("127.0.0.1"), "gerador de teste local (--teste)")
+        self.assertFalse(filtro.aceita("192.168.0.11"), "broadcast do outro simulador")
+        self.assertFalse(filtro.aceita("192.168.0.11"))
+        self.assertEqual((2, 2), (filtro.aceitos, filtro.ignorados))
+        self.assertEqual({"192.168.0.11"}, filtro.origens_ignoradas)
+
+    def test_probe_teaches_an_address_the_system_did_not_list(self):
+        self.ips_do_pc = {"127.0.0.1"}  # Windows nao listou a placa de rede
+        filtro = self._filtro()
+        self.assertEqual(1, self.sondas, "sonda logo ao abrir")
+        filtro.sonda_voltou("10.0.0.5")
+        self.assertTrue(filtro.aceita("10.0.0.5"))
+        self.assertFalse(filtro.aceita("10.0.0.6"))
+
+    def test_new_address_after_dhcp_is_picked_up_without_restart(self):
+        filtro = self._filtro()
+        self.ips_do_pc = {"127.0.0.1", "192.168.0.50"}  # o PC trocou de IP
+        self.assertFalse(filtro.aceita("192.168.0.50"), "relê no maximo a cada REVER_S")
+        self.agora = FiltroDeOrigem.REVER_S
+        self.assertTrue(filtro.aceita("192.168.0.50"))
+        self.assertEqual(2, self.sondas, "sonda de novo ao reler")
+
+    def test_learned_probe_address_survives_a_reread(self):
+        self.ips_do_pc = {"127.0.0.1"}
+        filtro = self._filtro()
+        filtro.sonda_voltou("10.0.0.5")
+        self.agora = FiltroDeOrigem.REVER_S
+        filtro.aceita("10.0.0.99")  # forca a releitura
+        self.assertTrue(filtro.aceita("10.0.0.5"))
+
+    def test_warns_once_when_only_the_neighbor_arrives(self):
+        filtro = self._filtro()
+        for _ in range(FiltroDeOrigem.PACOTES_ATE_AVISAR + 50):
+            filtro.aceita("192.168.0.11")
+        self.assertTrue(filtro.avisou_sem_local)
+        outro = self._filtro()
+        outro.aceita("192.168.0.10")
+        for _ in range(FiltroDeOrigem.PACOTES_ATE_AVISAR + 50):
+            outro.aceita("192.168.0.11")
+        self.assertFalse(outro.avisou_sem_local, "com o jogo deste PC chegando, o vizinho nao e' problema")
+
+    def test_developer_overrides(self):
+        self.assertTrue(self._filtro(aceitar_qualquer=True).aceita("192.168.0.11"))
+        self.assertTrue(self._filtro(extras=["192.168.0.11"]).aceita("192.168.0.11"))
+
+    def test_real_machine_addresses_include_loopback(self):
+        self.assertIn("127.0.0.1", enderecos_deste_pc())
 
 
 class _Contador(BaseHTTPRequestHandler):

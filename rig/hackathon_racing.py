@@ -137,6 +137,13 @@ def carregar_config(caminho: Path) -> dict:
         "sample_hz": os.environ.get("RACING_SAMPLE_HZ", str(ams2_collector.DEFAULT_SAMPLE_HZ)),
         # Porta da tela "Trocar piloto" (so' 127.0.0.1). 0 desliga a tela.
         "painel_porta": os.environ.get("RACING_PAINEL_PORTA", str(painel_piloto.PORTA_PADRAO)),
+        # De onde aceitar o UDP do jogo. "este_pc" (padrao, automatico): so' do
+        # AMS2 deste computador - com dois simuladores na mesma rede, o
+        # broadcast do vizinho chegava aqui e misturava os carros. Fica FORA do
+        # racing.ini do pacote de proposito: o operador nao configura nada.
+        # Para desenvolvimento: "qualquer" (sem filtro) ou IPs separados por
+        # virgula, aceitos alem deste PC.
+        "aceitar_udp_de": os.environ.get("RACING_ACEITAR_UDP_DE", "este_pc"),
     }
     if caminho.exists():
         parser = configparser.ConfigParser()
@@ -337,6 +344,7 @@ def main() -> int:
 
     # Reaproveita o loop ja' testado do ams2_collector, montando o mesmo Namespace
     # que o CLI dele produz.
+    aceitar_udp_de = config["aceitar_udp_de"].strip().lower()
     opcoes = argparse.Namespace(
         source="udp", rig_id=config["rig_id"], rig_name=config["rig_name"],
         driver_name=piloto_salvo, company_name=empresa_salva,
@@ -346,6 +354,9 @@ def main() -> int:
         endpoint=config["dt_env_url"] or None, token=config["dt_api_token"] or None,
         sink=config["sink"], otlp_endpoint=ams2_collector.DEFAULT_OTLP_ENDPOINT,
         dry_run=args.dry_run,
+        aceitar_qualquer_origem=aceitar_udp_de == "qualquer",
+        aceitar_udp_de=[ip.strip() for ip in aceitar_udp_de.split(",")
+                        if ip.strip() and aceitar_udp_de not in ("este_pc", "qualquer")],
     )
     ingest_url = opcoes.endpoint.rstrip("/") + "/api/v2/bizevents/ingest" if opcoes.endpoint else None
 
